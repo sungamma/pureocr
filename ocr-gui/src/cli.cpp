@@ -251,7 +251,7 @@ int RunCli(int argc, char **argv) {
             std::printf("         [--csv <复核.csv>] [--review-score 0.75]\n");
             std::printf("         [--model-dir <模型目录>] [--log <日志文件>]\n");
             std::printf("         [--resume] [--cache <缓存.tsv>]  断点续跑：已完成页跳过\n");
-            std::printf("         [--preset auto|v3|v4|v4s] [--det-model <文件名|绝对路径>]\n");
+            std::printf("         [--preset auto|v3|v4|v4s|v5|v5s] [--det-model <文件名|绝对路径>]\n");
             std::printf("         [--rec-model <文件名|绝对路径>] [--cls-model <文件名>]\n");
             std::printf("         [--merge-gap 0.8]  同行碎片合并阈值（×行高，0=关闭）\n");
             std::printf("  ocrgui --image <图片> [--out <json>] [--dump-crops <目录>] [--threads N]\n");
@@ -273,12 +273,12 @@ int RunCli(int argc, char **argv) {
     if (!preset.empty()) {
         const ocr::ModelPreset *mp = FindPreset(preset);
         if (!mp) {
-            std::fprintf(stderr, "未知模型预设: %s（可用 auto / v3 / v4 / v4s）\n", preset.c_str());
+            std::fprintf(stderr, "未知模型预设: %s（可用 auto / v3 / v4 / v4s / v5 / v5s）\n", preset.c_str());
             return 2;
         }
-        detModel = mp->det;
-        recModel = mp->rec;
-        clsModel = mp->cls;
+        if (detModel.empty()) detModel = mp->det;
+        if (recModel.empty()) recModel = mp->rec;
+        if (clsModel.empty()) clsModel = mp->cls;
     }
 
     if (!pdfPath.empty()) {

@@ -5,7 +5,7 @@
 （国内可用 HF_ENDPOINT=https://hf-mirror.com）。
 
     python tools/fetch_models.py            # v3 + v4 + v5 移动版
-    python tools/fetch_models.py --server   # 额外下 v4 服务器版（更准但慢）
+    python tools/fetch_models.py --server   # 额外拉 v4/v5 服务器版（更准、更慢，约 240 MB）
 """
 import os
 import shutil
@@ -36,6 +36,10 @@ FROM_HF_SERVER = [
      RAPIDOCR_HF + "PP-OCRv4/ch_PP-OCRv4_det_server_infer.onnx"),
     ("ch_PP-OCRv4_rec_server_infer.onnx",
      RAPIDOCR_HF + "PP-OCRv4/ch_PP-OCRv4_rec_server_infer.onnx"),
+    ("ch_PP-OCRv5_det_server_infer.onnx",
+     "https://huggingface.co/bukuroo/PPOCRv5-ONNX/resolve/main/ppocrv5-server-det.onnx"),
+    ("ch_PP-OCRv5_rec_server_infer.onnx",
+     "https://huggingface.co/bukuroo/PPOCRv5-ONNX/resolve/main/ppocrv5-server-rec.onnx"),
 ]
 
 

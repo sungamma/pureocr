@@ -758,6 +758,8 @@ const ModelPreset *ModelPresetList(int *count) {
          "ch_ppocr_mobile_v2.0_cls_infer.onnx"},
         {"v3", "v3 移动版", "ch_PP-OCRv3_det_infer.onnx", "ch_PP-OCRv3_rec_infer.onnx",
          "ch_ppocr_mobile_v2.0_cls_infer.onnx"},
+        {"v5s", "V5服务器版（最准、最慢）", "ch_PP-OCRv5_det_server_infer.onnx",
+         "ch_PP-OCRv5_rec_server_infer.onnx", "ch_ppocr_mobile_v2.0_cls_infer.onnx"},
         {"v4s", "v4 服务器版（更准但慢）", "ch_PP-OCRv4_det_server_infer.onnx",
          "ch_PP-OCRv4_rec_server_infer.onnx", "ch_ppocr_mobile_v2.0_cls_infer.onnx"},
         {"auto", "自动探测（v4 优先）", "", "", "ch_ppocr_mobile_v2.0_cls_infer.onnx"},

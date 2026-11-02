@@ -11,7 +11,7 @@
 | 定位 | Dear ImGui 桌面界面 + 命令行双入口；OCR 引擎为 ONNX Runtime 上的 PP-OCR（RapidOCR 同款流程） |
 | 构建目录 | `C:\Users\xwtal\build\ocrgui`（**必须在 Dropbox 之外**，否则编译/链接报文件占用） |
 | 产物 | `C:\Users\xwtal\build\ocrgui\Release\ocrgui.exe` |
-| 模型 | `ocr-gui\models`（不入库）：v3 / v4 / v5 移动版 + 方向分类 + `ppocrv5_dict.txt` |
+| 模型 | `ocr-gui\models`（不入库）：v3 / v4 / v5 移动版 + 方向分类 + `ppocrv5_dict.txt + v5 服务器版（`--preset v5s`） |
 | 测试样本 | `D:\Dropbox\14.repo\git\script\ocr\test\样本10页.pdf`（**不入库**） |
 | 机器 | Windows 11 / 16 核 / 32 GB / **无 NVIDIA 显卡** |
 
@@ -37,7 +37,7 @@ Start-Process -Wait -WindowStyle Hidden -FilePath $exe -ArgumentList @('--pdf', 
 ocrgui --pdf <in.pdf> [--out-pdf <out.pdf>] [--dpi 300] [--threads 4]
        [--pages 1-10,15] [--font <ttf>] [--no-mask] [--min-score 0.5]
        [--csv <导出.csv>] [--review-score 0.75] [--resume] [--cache <缓存.tsv>]
-       [--preset auto|v5|v4|v3|v4s] [--det-model <文件名|绝对路径>]
+       [--preset auto|v5|v5s|v4|v4s|v3] [--det-model <文件名|绝对路径>]
        [--rec-model <文件名|绝对路径>] [--cls-model <文件名>]
        [--merge-gap 0.8]   # 同行碎片合并阈值（×行高），0 = 关闭
        [--model-dir <模型目录>] [--log <日志文件>]
@@ -95,6 +95,20 @@ ocrgui --image <图片> [--out <json>] [--dump-crops <目录>] [--threads N]
 
 结论：**日常默认 v5**（更准且比 v4 快）；v3 保留作速度兜底；v4 置信度略高可作对照。
 
+### PP-OCRv5 服务器版（`--preset v5s`，可选）
+
+| 指标（10 页 / 300dpi / 4 线程 / 合并开） | v5 移动版 | v5 服务器版 |
+|---|---|---|
+| 行数 | **637** | 614 |
+| 平均置信度 | 0.9499 | **0.9523** |
+| 置信度 <0.9 | 114 | **101** |
+| 待复核（<0.75） | 34 | **25** |
+| 用时 | **43.9 s** | 290.5 s（×6.6） |
+
+- 2 页样本：v5 移动版 87 行 / 0.9776 / 2 个待复核 / 9.6 s；v5s 93 行 / 0.9811 / 0 个 / 36.4 s
+- 结论：**定稿可用 v5s，批量仍用 v5**；CPU 上服务器版代价约 4~7 倍
+- 模型来源与校验详见 `models/README.md`（与 PaddleX 权重数值一致）
+
 ## 3. 待办（用户指定顺序 2 → 3 → 1 → 4；2、3、1 已完成）
 
 ### ✅ GUI 交互增强（第 4 项，2026-11-02 完成）
@@ -135,5 +149,7 @@ ocrgui --image <图片> [--out <json>] [--dump-crops <目录>] [--threads N]
 [ ] --resume 首发建缓存、二次命中；换模型或换 --merge-gap 后缓存应失效
 [ ] 中途 kill → 重跑命中已落盘页
 [ ] 同输出并发第二个进程报「已有任务正在处理同一输出」
+[ ] `--preset v5s` 可用（两个服务器版模型，已校验）
+[ ] `--preset v5 --det-model/--rec-model` 显式指定时不被预设覆盖
 [ ] 预览页签识别框与文字位置对齐
 ```
