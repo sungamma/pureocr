@@ -75,7 +75,8 @@ int RunPdfCli(const std::string &pdfPath, const std::string &outPdf, const std::
               const std::string &fontPath, double dpi, int threads, float minScore,
               const std::string &pageSpec, bool maskOriginal, const std::string &csvPath,
               float reviewScore,
-              bool resume, const std::string &cachePath) {
+              bool resume, const std::string &cachePath, const std::string &detModel,
+              const std::string &recModel, const std::string &clsModel) {
 #ifdef OCRGUI_HAS_MUPDF
     namespace fs = std::filesystem;
     if (fontPath.empty()) {
@@ -105,6 +106,9 @@ int RunPdfCli(const std::string &pdfPath, const std::string &outPdf, const std::
     opt.maskOriginal = maskOriginal;
     opt.resume = resume;
     opt.cachePath = cachePath;
+    opt.detModel = detModel;
+    opt.recModel = recModel;
+    opt.clsModel = clsModel;
     if (!pageSpec.empty() && !pdf::ParsePageSpec(pageSpec, &opt.pages)) {
         std::fprintf(stderr, "页码参数无效: %s\n", pageSpec.c_str());
         return 2;
@@ -113,6 +117,8 @@ int RunPdfCli(const std::string &pdfPath, const std::string &outPdf, const std::
     std::printf("输入: %s\n", pdfPath.c_str());
     std::printf("输出: %s\n", opt.outputPath.c_str());
     std::printf("DPI %g，线程 %d，最低置信度 %.2f\n", opt.dpi, opt.threads, opt.minScore);
+    std::printf("模型: det=%s rec=%s\n", detModel.empty() ? "自动探测" : detModel.c_str(),
+                recModel.empty() ? "自动探测" : recModel.c_str());
     std::fflush(stdout);
 
     const auto t0 = std::chrono::steady_clock::now();
@@ -152,10 +158,19 @@ int RunPdfCli(const std::string &pdfPath, const std::string &outPdf, const std::
 #else
     (void)pdfPath; (void)outPdf; (void)modelDir; (void)fontPath; (void)dpi; (void)threads;
     (void)minScore; (void)pageSpec; (void)maskOriginal; (void)csvPath; (void)reviewScore;
-    (void)resume; (void)cachePath;
+    (void)resume; (void)cachePath; (void)detModel; (void)recModel; (void)clsModel;
     std::fprintf(stderr, "本版本未编译 MuPDF 支持，无法处理 PDF\n");
     return 1;
 #endif
+}
+
+const ocr::ModelPreset *FindPreset(const std::string &id) {
+    int n = 0;
+    const ocr::ModelPreset *list = ocr::ModelPresetList(&n);
+    for (int i = 0; i < n; ++i) {
+        if (id == list[i].id) return &list[i];
+    }
+    return nullptr;
 }
 
 }  // namespace
@@ -170,6 +185,7 @@ int RunCli(int argc, char **argv) {
     bool maskOriginal = true;
     bool resume = false;
     std::string cachePath;
+    std::string preset, detModel, recModel, clsModel;
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -205,6 +221,14 @@ int RunCli(int argc, char **argv) {
             resume = true;
         } else if (a == "--cache" && i + 1 < argc) {
             cachePath = argv[++i];
+        } else if (a == "--preset" && i + 1 < argc) {
+            preset = argv[++i];
+        } else if (a == "--det-model" && i + 1 < argc) {
+            detModel = argv[++i];
+        } else if (a == "--rec-model" && i + 1 < argc) {
+            recModel = argv[++i];
+        } else if (a == "--cls-model" && i + 1 < argc) {
+            clsModel = argv[++i];
         } else if (a == "--threads" && i + 1 < argc) {
             threads = std::stoi(argv[++i]);
         } else if (a == "--help" || a == "-h") {
@@ -214,6 +238,8 @@ int RunCli(int argc, char **argv) {
             std::printf("         [--csv <复核.csv>] [--review-score 0.75]\n");
             std::printf("         [--model-dir <模型目录>] [--log <日志文件>]\n");
             std::printf("         [--resume] [--cache <缓存.tsv>]  断点续跑：已完成页跳过\n");
+            std::printf("         [--preset auto|v3|v4|v4s] [--det-model <文件名|绝对路径>]\n");
+            std::printf("         [--rec-model <文件名|绝对路径>] [--cls-model <文件名>]\n");
             std::printf("  ocrgui --image <图片> [--out <json>] [--dump-crops <目录>] [--threads N]\n");
             return 0;
         } else {
@@ -230,10 +256,21 @@ int RunCli(int argc, char **argv) {
     }
     if (modelDir.empty()) modelDir = DefaultModelDir();
     if (fontPath.empty()) fontPath = DefaultFont();
+    if (!preset.empty()) {
+        const ocr::ModelPreset *mp = FindPreset(preset);
+        if (!mp) {
+            std::fprintf(stderr, "未知模型预设: %s（可用 auto / v3 / v4 / v4s）\n", preset.c_str());
+            return 2;
+        }
+        detModel = mp->det;
+        recModel = mp->rec;
+        clsModel = mp->cls;
+    }
 
     if (!pdfPath.empty()) {
         return RunPdfCli(pdfPath, outPdf, modelDir, fontPath, dpi, threads, minScore, pageSpec,
-                         maskOriginal, csvPath, reviewScore, resume, cachePath);
+                         maskOriginal, csvPath, reviewScore, resume, cachePath, detModel,
+                         recModel, clsModel);
     }
 
     if (imagePath.empty()) {

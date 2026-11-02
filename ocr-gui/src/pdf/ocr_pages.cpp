@@ -135,8 +135,14 @@ bool RunPdfOcr(const OcrRunOptions& opt, const OcrProgress& progress, OcrRunStat
 
     // 页级缓存路径（仅断点续跑时使用）
     std::string cachePath;
+    std::string cacheTag;
     if (opt.resume) {
         cachePath = opt.cachePath.empty() ? DefaultCachePath(opt.outputPath) : opt.cachePath;
+        ocr::EngineOptions tagOpt;
+        tagOpt.modelDir = ToWide(opt.modelDir);
+        tagOpt.detModel = opt.detModel;
+        tagOpt.recModel = opt.recModel;
+        cacheTag = ocr::ModelTag(tagOpt);  // 换模型后缓存自动失效
     }
 
     TextLayer layer;
@@ -166,21 +172,24 @@ bool RunPdfOcr(const OcrRunOptions& opt, const OcrProgress& progress, OcrRunStat
     int pendingOcr = n;
     if (opt.resume) {
         std::vector<OcrPageLines> cached;
-        if (LoadLineCache(cachePath, opt.dpi, &cached)) {
-            for (const auto& cp : cached) {
-                for (int i = 0; i < n; ++i) {
-                    if (pages[i] != cp.page || results[i].done) continue;
-                    results[i].lines = cp.lines;
-                    results[i].width = cp.width;
-                    results[i].height = cp.height;
-                    results[i].done = true;
-                    results[i].fromCache = true;
-                    --pendingOcr;
-                    break;
-                }
+        if (!LoadLineCache(cachePath, opt.dpi, cacheTag, &cached)) {
+            // dpi 或模型与旧缓存不符：旧缓存作废，删掉后重写文件头
+            std::remove(cachePath.c_str());
+            cached.clear();
+        }
+        for (const auto& cp : cached) {
+            for (int i = 0; i < n; ++i) {
+                if (pages[i] != cp.page || results[i].done) continue;
+                results[i].lines = cp.lines;
+                results[i].width = cp.width;
+                results[i].height = cp.height;
+                results[i].done = true;
+                results[i].fromCache = true;
+                --pendingOcr;
+                break;
             }
         }
-        if (!cache.Open(cachePath, opt.dpi, &message)) {
+        if (!cache.Open(cachePath, opt.dpi, cacheTag, &message)) {
             if (err) *err = message;
             return false;
         }
@@ -213,6 +222,9 @@ bool RunPdfOcr(const OcrRunOptions& opt, const OcrProgress& progress, OcrRunStat
         }
         ocr::EngineOptions eopt;
         eopt.modelDir = ToWide(opt.modelDir);
+        eopt.detModel = opt.detModel;
+        eopt.recModel = opt.recModel;
+        eopt.clsModel = opt.clsModel;
         eopt.minScore = opt.minScore;
         // 每个 worker 各自一个 ORT session：限制单 session 的线程数，
         // 避免「线程数 × ORT 默认线程」把 CPU 过度订阅（实测 8 线程反而更慢）

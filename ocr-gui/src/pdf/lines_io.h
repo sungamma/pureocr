@@ -27,7 +27,7 @@ public:
     LineCacheWriter(const LineCacheWriter&) = delete;
     LineCacheWriter& operator=(const LineCacheWriter&) = delete;
 
-    bool Open(const std::string& path, double dpi, std::string* err);
+    bool Open(const std::string& path, double dpi, const std::string& tag, std::string* err);
     void Append(const OcrPageLines& page);
     void Close();
     bool IsOpen() const { return f_ != nullptr; }
@@ -37,6 +37,7 @@ private:
 };
 
 /// 载入缓存；同页出现多次时以最后一条为准。dpi 不符返回空（视为无缓存）。
-bool LoadLineCache(const std::string& path, double dpi, std::vector<OcrPageLines>* pages);
+bool LoadLineCache(const std::string& path, double dpi, const std::string& tag,
+                   std::vector<OcrPageLines>* pages);
 
 }  // namespace pdf

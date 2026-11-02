@@ -17,6 +17,10 @@ struct TextLine {
 /// 与 rapidocr_onnxruntime 默认配置保持一致
 struct EngineOptions {
     std::wstring modelDir;      // 含三个 .onnx 的目录
+    std::string detModel;       // det 模型：modelDir 下的文件名，或绝对路径；空 = 自动探测（v4 优先）
+    std::string recModel;       // rec 模型：同上
+    std::string clsModel;       // 方向分类模型：同上；找不到会自动关闭该步骤
+    std::string keysFile;       // rec 无 metadata 字典时用的字典文件；空 = 自动在 modelDir 找
     float detThresh = 0.3f;     // 二值化阈值
     float boxThresh = 0.5f;     // 文本框平均置信度阈值
     float unclipRatio = 1.6f;   // 文本框外扩比例
@@ -43,6 +47,19 @@ private:
     struct Impl;
     std::unique_ptr<Impl> d_;
 };
+
+/// 预置模型组合（det/rec/cls 文件名），GUI 下拉与 CLI --preset 共用
+struct ModelPreset {
+    const char* id;     // 命令行用：auto / v3 / v4 / v4s
+    const char* label;  // 界面显示名
+    const char* det;    // 空 = 交给自动探测，下同
+    const char* rec;
+    const char* cls;
+};
+const ModelPreset* ModelPresetList(int* count);
+
+/// 实际加载的模型标识（det+rec 文件名），用于页级缓存失效判断等
+std::string ModelTag(const EngineOptions& opt);
 
 std::string EraseWhitespace(const std::string& s);
 

@@ -19,6 +19,9 @@ struct OcrRunOptions {
     std::string csvPath;
     std::string cachePath;     // 页级缓存（断点续跑用）；为空则跟随输出文件命名
     bool resume = false;       // 断点续跑：命中缓存页直接复用，只对未完成页跑 OCR       // 非空则导出逐行 CSV
+    std::string detModel;      // det 模型文件名/绝对路径；空 = 自动探测（v4 优先）
+    std::string recModel;      // rec 模型：同上
+    std::string clsModel;      // 方向分类模型：同上
     bool maskOriginal = true;  // 屏蔽原文字层，复制文字只输出 OCR 结果
     std::vector<int> pages;    // 0 基页号；空表示全部
 };

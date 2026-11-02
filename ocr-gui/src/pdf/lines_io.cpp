@@ -105,7 +105,8 @@ bool WriteLinesCsv(const std::string& path, const std::vector<OcrPageLines>& pag
 
 LineCacheWriter::~LineCacheWriter() { Close(); }
 
-bool LineCacheWriter::Open(const std::string& path, double dpi, std::string* err) {
+bool LineCacheWriter::Open(const std::string& path, double dpi, const std::string& tag,
+                           std::string* err) {
     Close();
     FILE* probe = nullptr;
     bool empty = true;
@@ -119,7 +120,7 @@ bool LineCacheWriter::Open(const std::string& path, double dpi, std::string* err
         return false;
     }
     if (empty) {
-        std::fprintf(f_, "# ocrgui-cache v1 dpi=%g\n", dpi);
+        std::fprintf(f_, "# ocrgui-cache v1 dpi=%g models=%s\n", dpi, tag.c_str());
         std::fflush(f_);
     }
     return true;
@@ -145,7 +146,8 @@ void LineCacheWriter::Close() {
     }
 }
 
-bool LoadLineCache(const std::string& path, double dpi, std::vector<OcrPageLines>* pages) {
+bool LoadLineCache(const std::string& path, double dpi, const std::string& tag,
+                   std::vector<OcrPageLines>* pages) {
     if (pages) pages->clear();
     FILE* f = nullptr;
     if (fopen_s(&f, path.c_str(), "rb") != 0 || !f) return false;
@@ -157,6 +159,7 @@ bool LoadLineCache(const std::string& path, double dpi, std::vector<OcrPageLines
     OcrPageLines cur;
     bool havePage = false;
     bool dpiOk = true;
+    std::string cacheTag;
     std::vector<OcrPageLines> acc;
 
     while (std::fgets(buf, sizeof(buf), f)) {
@@ -169,6 +172,8 @@ bool LoadLineCache(const std::string& path, double dpi, std::vector<OcrPageLines
                 const double d = std::atof(line.c_str() + p + 4);
                 if (d > 0 && dpi > 0 && std::abs(d - dpi) > 0.5) dpiOk = false;
             }
+            const size_t m = line.find("models=");
+            if (m != std::string::npos) cacheTag = line.c_str() + m + 7;
             continue;
         }
         SplitTabs(line, &fields);
@@ -192,7 +197,8 @@ bool LoadLineCache(const std::string& path, double dpi, std::vector<OcrPageLines
     }
     if (havePage) acc.push_back(cur);
     std::fclose(f);
-    if (!dpiOk) return false;  // dpi 变了，缓存不可用
+    if (!dpiOk) return false;
+    if (!tag.empty() && cacheTag != tag) return false;  // 换了模型，缓存作废  // dpi 变了，缓存不可用
     if (pages) *pages = std::move(acc);
     return true;
 }

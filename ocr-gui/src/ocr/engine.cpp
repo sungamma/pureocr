@@ -141,6 +141,100 @@ void OrderQuad(float q[4][2]) {
     for (int k = 0; k < 4; ++k) { q[k][0] = out[k][0]; q[k][1] = out[k][1]; }
 }
 
+bool FileExistsW(const std::wstring &p) {
+    return GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES;
+}
+
+std::wstring BaseName(const std::wstring &p) {
+    const size_t slash = p.find_last_of(L"\\/");
+    return slash == std::wstring::npos ? p : p.substr(slash + 1);
+}
+
+std::string BaseNameUtf8(const std::wstring &p) { return WideToUtf8(BaseName(p)); }
+
+/// 解析模型路径：显式名可为绝对路径或 modelDir 下的文件名；未指定则按候选顺序自动探测
+bool ResolveModel(const std::wstring &dir, const std::string &spec,
+                  std::initializer_list<const wchar_t *> candidates, const char *what,
+                  std::wstring *out, std::string *err) {
+    if (!spec.empty()) {
+        const std::wstring w = Utf8ToWide(spec);
+        const bool abs = (w.size() > 1 && w[1] == L':') ||
+                         (w.size() > 1 && w[0] == L'\\' && w[1] == L'\\');
+        const std::wstring p = abs ? w : (dir + L"/" + w);
+        if (!FileExistsW(p)) {
+            if (err) *err = std::string("找不到 ") + what + " 模型: " + spec;
+            return false;
+        }
+        *out = p;
+        return true;
+    }
+    std::string tried;
+    for (const wchar_t *c : candidates) {
+        const std::wstring p = dir + L"/" + c;
+        if (FileExistsW(p)) {
+            *out = p;
+            return true;
+        }
+        if (!tried.empty()) tried += ", ";
+        tried += WideToUtf8(c);
+    }
+    if (err) {
+        *err = std::string("找不到 ") + what + " 模型（已尝试: " + tried + "，目录: " +
+               WideToUtf8(dir) + "）";
+    }
+    return false;
+}
+
+/// 读词典文件（UTF-8 可带 BOM），按 Paddle 约定补末尾空格
+bool LoadKeysFile(const std::wstring &path, std::vector<std::string> *chars) {
+    FILE *f = nullptr;
+    if (_wfopen_s(&f, path.c_str(), L"rb") != 0 || !f) return false;
+    std::string all;
+    char buf[8192];
+    size_t rd = 0;
+    while ((rd = std::fread(buf, 1, sizeof(buf), f)) > 0) all.append(buf, rd);
+    std::fclose(f);
+    if (all.size() >= 3 && static_cast<unsigned char>(all[0]) == 0xEF &&
+        static_cast<unsigned char>(all[1]) == 0xBB && static_cast<unsigned char>(all[2]) == 0xBF) {
+        all.erase(0, 3);
+    }
+    chars->clear();
+    size_t start = 0;
+    while (start <= all.size()) {
+        const size_t nl = all.find('\n', start);
+        std::string line =
+            all.substr(start, nl == std::string::npos ? std::string::npos : nl - start);
+        while (!line.empty() && line.back() == '\r') line.pop_back();
+        if (!line.empty()) chars->push_back(line);
+        if (nl == std::string::npos) break;
+        start = nl + 1;
+    }
+    if (!chars->empty() && chars->back() != " ") chars->push_back(" ");
+    return !chars->empty();
+}
+
+bool ResolveKeys(const std::wstring &dir, const std::string &spec, std::wstring *out) {
+    if (!spec.empty()) {
+        const std::wstring w = Utf8ToWide(spec);
+        const bool abs = (w.size() > 1 && w[1] == L':') ||
+                         (w.size() > 1 && w[0] == L'\\' && w[1] == L'\\');
+        const std::wstring p = abs ? w : (dir + L"/" + w);
+        if (!FileExistsW(p)) return false;
+        *out = p;
+        return true;
+    }
+    const wchar_t *cands[] = {L"ppocr_keys_v1.txt", L"ppocr_keys.txt", L"keys.txt"};
+    for (const wchar_t *c : cands) {
+        const std::wstring p = dir + L"/" + c;
+        if (FileExistsW(p)) {
+            *out = p;
+            return true;
+        }
+    }
+    return false;
+}
+
+
 }  // namespace
 
 struct Engine::Impl {
@@ -576,14 +670,61 @@ std::string EraseWhitespace(const std::string &s) {
 Engine::Engine() : d_(std::make_unique<Impl>()) {}
 Engine::~Engine() = default;
 
+const ModelPreset *ModelPresetList(int *count) {
+    static const ModelPreset kPresets[] = {
+        {"v4", "v4 移动版（推荐）", "ch_PP-OCRv4_det_infer.onnx", "ch_PP-OCRv4_rec_infer.onnx",
+         "ch_ppocr_mobile_v2.0_cls_infer.onnx"},
+        {"v3", "v3 移动版", "ch_PP-OCRv3_det_infer.onnx", "ch_PP-OCRv3_rec_infer.onnx",
+         "ch_ppocr_mobile_v2.0_cls_infer.onnx"},
+        {"v4s", "v4 服务器版（更准但慢）", "ch_PP-OCRv4_det_server_infer.onnx",
+         "ch_PP-OCRv4_rec_server_infer.onnx", "ch_ppocr_mobile_v2.0_cls_infer.onnx"},
+        {"auto", "自动探测（v4 优先）", "", "", "ch_ppocr_mobile_v2.0_cls_infer.onnx"},
+    };
+    if (count) *count = static_cast<int>(sizeof(kPresets) / sizeof(kPresets[0]));
+    return kPresets;
+}
+
+std::string ModelTag(const EngineOptions &opt) {
+    std::wstring det, rec;
+    std::string ignored;
+    if (!ResolveModel(opt.modelDir, opt.detModel,
+                      {L"ch_PP-OCRv4_det_infer.onnx", L"ch_PP-OCRv3_det_infer.onnx"}, "det", &det,
+                      &ignored)) {
+        det.clear();
+    }
+    if (!ResolveModel(opt.modelDir, opt.recModel,
+                      {L"ch_PP-OCRv4_rec_infer.onnx", L"ch_PP-OCRv3_rec_infer.onnx"}, "rec", &rec,
+                      &ignored)) {
+        rec.clear();
+    }
+    return BaseNameUtf8(det) + "+" + BaseNameUtf8(rec);
+}
+
 bool Engine::Init(const EngineOptions &opt, std::string *err) {
     d_->opt = opt;
     const std::wstring dir = opt.modelDir;
-    if (!d_->Load(dir + L"/ch_PP-OCRv3_det_infer.onnx", opt.threads, d_->det, err)) return false;
-    if (!d_->Load(dir + L"/ch_PP-OCRv3_rec_infer.onnx", opt.threads, d_->rec, err)) return false;
+    // 自动探测顺序：v4 优先、其次 v3；把模型文件丢进 modelDir 即可切换
+    std::wstring detPath, recPath, clsPath;
+    if (!ResolveModel(dir, opt.detModel,
+                      {L"ch_PP-OCRv4_det_infer.onnx", L"ch_PP-OCRv3_det_infer.onnx"}, "det", &detPath,
+                      err)) {
+        return false;
+    }
+    if (!ResolveModel(dir, opt.recModel,
+                      {L"ch_PP-OCRv4_rec_infer.onnx", L"ch_PP-OCRv3_rec_infer.onnx"}, "rec", &recPath,
+                      err)) {
+        return false;
+    }
+    if (!d_->Load(detPath, opt.threads, d_->det, err)) return false;
+    if (!d_->Load(recPath, opt.threads, d_->rec, err)) return false;
     if (opt.useAngleCls) {
-        if (!d_->Load(dir + L"/ch_ppocr_mobile_v2.0_cls_infer.onnx", opt.threads, d_->cls, err))
-            return false;
+        std::string clsErr;
+        if (ResolveModel(dir, opt.clsModel, {L"ch_ppocr_mobile_v2.0_cls_infer.onnx"}, "cls",
+                         &clsPath, &clsErr)) {
+            if (!d_->Load(clsPath, opt.threads, d_->cls, err)) return false;
+        } else {
+            d_->opt.useAngleCls = false;  // 没有方向分类模型就跳过，不影响主流程
+        }
     }
 
     // 识别字典直接取自 rec 模型的 metadata
@@ -605,6 +746,11 @@ bool Engine::Init(const EngineOptions &opt, std::string *err) {
             }
         }
     } catch (...) {
+    }
+    // 回退：rec 模型没带 metadata 字典时读字典文件（Paddle 约定：blank + 字典 + 末尾空格）
+    if (d_->chars.empty()) {
+        std::wstring keysPath;
+        if (ResolveKeys(dir, opt.keysFile, &keysPath)) LoadKeysFile(keysPath, &d_->chars);
     }
     if (d_->chars.empty()) {
         if (err) *err = "识别字典为空（model metadata 中未找到 character）";

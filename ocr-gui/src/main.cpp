@@ -50,6 +50,14 @@ int g_threads = 4;
 int g_dpi = 300;
 bool g_switchToPreview = false;
 bool g_resume = false;  // 断点续跑
+int g_presetIdx = 0;  // 模型预置（索引见 ocr::ModelPresetList）
+
+const ocr::ModelPreset *CurrentPreset() {
+    int n = 0;
+    const ocr::ModelPreset *list = ocr::ModelPresetList(&n);
+    if (g_presetIdx < 0 || g_presetIdx >= n) return list;
+    return &list[g_presetIdx];
+}
 std::chrono::steady_clock::time_point g_startTime;
 
 #ifdef OCRGUI_HAS_MUPDF
@@ -228,6 +236,10 @@ void StartOcr() {
         opt.minScore = minScore;
         opt.maskOriginal = true;
         opt.resume = g_resume;
+        const ocr::ModelPreset *mp = CurrentPreset();
+        opt.detModel = mp->det;
+        opt.recModel = mp->rec;
+        opt.clsModel = mp->cls;
         opt.pages = pages;
 
         pdf::OcrRunStats stats;
@@ -300,6 +312,19 @@ void DrawOcrTab() {
     }
     ImGui::SetNextItemWidth(360);
     if (ImGui::InputText("模型目录", modelBuf, sizeof(modelBuf))) g_modelDir = modelBuf;
+    {
+        int pc = 0;
+        const ocr::ModelPreset *presets = ocr::ModelPresetList(&pc);
+        static std::vector<const char *> labels;
+        if (static_cast<int>(labels.size()) != pc) {
+            labels.clear();
+            for (int i = 0; i < pc; ++i) labels.push_back(presets[i].label);
+        }
+        ImGui::SetNextItemWidth(240);
+        ImGui::Combo("模型", &g_presetIdx, labels.data(), pc);
+        ImGui::SameLine();
+        ImGui::TextDisabled("（换模型会自动让断点缓存失效）");
+    }
     ImGui::SetNextItemWidth(360);
     static char pageBuf[128] = "";
     if (ImGui::InputText("页范围", pageBuf, sizeof(pageBuf))) g_pageSpec = pageBuf;
