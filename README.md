@@ -87,3 +87,90 @@ python ocr-gui/tools/compare_page.py "样本.pdf" 5
 已知差异（非 bug）：C++ 识别结果与 rapidocr 的 `resize_norm_img + session` 底层路径**完全一致**
 （同图同分数），但 rapidocr 的 `__call__` 包装层给出的分数系统性偏低 ~0.2，
 于是它在 0.5 阈值下过滤掉更多小框（165 检出 → 117），C++ 保留更多（→158）。
+
+## M2 完成（2026-11-02）：PDF -> 可复制文字 PDF
+
+接入 MuPDF 1.25.0 做 PDF 渲染与写入，打通「PDF 输入 -> 逐页渲染 -> OCR -> 隐形文字层 -> 保存」。
+
+### 1. 编译 MuPDF（只需一次）
+
+`third_party/` 已被 gitignore，需要自己构建；仓库里不放二进制。
+
+1. 下载源码：https://mupdf.com/downloads/archive/mupdf-1.25.0-source.tar.gz
+2. 用 VS 自带 sln 编静态库（要用 v143 覆盖它的 v142）：
+
+```powershell
+$msbuild = "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"
+& $msbuild "<源码目录>\platform\win32\mupdf.sln" /t:libmupdf /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /m
+```
+
+3. 拷贝：`<源码目录>/include` -> `third_party/mupdf-1.25.0/include`，
+   `<源码目录>/platform/win32/x64/Release/libmupdf.lib` -> `third_party/mupdf-1.25.0/lib/`。
+
+CMake 检测到 `third_party/mupdf-1.25.0/lib/libmupdf.lib` 才会打开 `OCRGUI_HAS_MUPDF`；
+没有该库也能编译，只是 PDF 功能不可用。
+
+> MuPDF 是 AGPL 授权（个人/开源使用没问题，商业分发需 Artifex 商业许可）。
+
+### 2. CLI 用法
+
+```powershell
+$exe = 'C:\Users\xwtal\build\ocrgui\Release\ocrgui.exe'
+
+# 全文档
+& $exe --pdf "输入.pdf" --out-pdf "输出.pdf" --threads 4 --model-dir ocr-gui/models --log run.log
+
+# 只处理部分页（输出仍是整本，未选中的页不加文字层）
+& $exe --pdf "输入.pdf" --pages 1-10,15 --dpi 300 --threads 4
+
+# 不屏蔽原有文字层（默认屏蔽，保证复制出来的只有 OCR 结果）
+& $exe --pdf "输入.pdf" --no-mask
+```
+
+参数：`--pdf`、`--out-pdf`（默认 `原名_可复制文字.pdf`）、`--dpi`（默认 300）、`--threads`（默认 4）、
+`--pages`、`--font`（默认 simhei.ttf）、`--min-score`（默认 0.5）、`--no-mask`、`--log`。
+
+> 这个 exe 是 GUI 子系统程序，从 PowerShell 直接 `&` 调用不会等它结束；
+> 脚本里请用 `Start-Process -Wait -WindowStyle Hidden`，或者加 `--log` 看日志。
+> 进程默认降到 below-normal 优先级，尽量不抢前台。
+
+### 3. GUI
+
+不带参数启动即为 GUI：选 PDF -> 设线程数/DPI/置信度 -> 开始识别，进度条 + 日志实时刷新。
+
+### 4. 与 Python 版对齐的关键实现
+
+| 环节 | Python 版 | C++ 版 |
+|---|---|---|
+| 字号/基线 | `fontsize = box_h / em_height`；`baseline = y0*scale - top_ratio*fontsize` | 相同；`top_ratio` 用 `fz_bound_glyph("国")` 量字形墨迹盒 |
+| 横向对齐 | `insert_text(..., morph=Matrix(squeeze,1))` | 内容流 `Tm [fontsize*squeeze 0 0 fontsize x y]` |
+| 隐形字形 | `render_mode=3` | 内容流 `BT 3 Tr ... ET` |
+| 屏蔽原文 | 重写每个字体的 `/ToUnicode` 为零宽字符 | 同样，`MaskOriginalText()` 递归遍历 Resources / Form XObject |
+| 字体子集 | `doc.subset_fonts()` | 只裁 OCR 字体本身（`fz_subset_ttf_for_gids`） |
+
+两个踩过的坑：
+
+1. 不能用 `pdf_subset_fonts()`：它会重写文档里所有字体，实测让公式字体渲染出现每页几十个像素差异；
+   改成只裁剪新加的字体后逐像素差异归零。
+2. `do_garbage = 3`（去重）在 40MB / 339 页文件上要 3 分钟；用 `2`（重编号）只要 0.4 秒。
+
+### 5. 验收工具
+
+```powershell
+python ocr-gui/tools/verify_pdf.py "原始.pdf" "C++产物.pdf" --reference "Python产物.pdf"
+```
+
+实测（样本 10 页，300dpi，4 线程）：
+
+| 指标 | 结果 |
+|---|---|
+| 页数 / 书签 | 10/10；339 页那本 176/176 完全一致 |
+| 渲染逐像素 | 10/10 页差异像素 = 0 |
+| 文字层位置 | 框偏差中位 dx 0.12~0.20 pt，dy 0.37~1.45 pt |
+| 文本相似度 | 纯文字页 0.93~0.99（忽略空格 0.96~0.99） |
+| 屏蔽原字体 | 4533 个字体 / 49487 个编码，与 Python 版完全一致 |
+| 速度 | 10 页 38 s（≈3.8 s/页，4 线程）；Python 版约 11 s/页 |
+
+第 6、8 页相似度偏低（0.31 / 0.45）是评分口径问题：那两页是插图页，Python 版识别出大量「....」点线，
+C++ 反而识别出 `GB/T 151—2026`、`浮头式`、坐标轴数字等真实内容。
+

@@ -48,12 +48,26 @@ target_include_directories(imgui_backend PUBLIC
 target_link_libraries(imgui_backend PUBLIC glfw)
 
 # ---------- 主程序 ----------
-add_executable(ocrgui WIN32
+set(MUPDF_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/mupdf-1.25.0" CACHE PATH "MuPDF 目录")
+
+set(OCR_SOURCES
   src/main.cpp
   src/cli.cpp
   src/ocr/image.cpp
   src/ocr/engine.cpp
 )
+if (EXISTS "${MUPDF_DIR}/lib/libmupdf.lib")
+  message(STATUS "MuPDF: ${MUPDF_DIR}")
+  list(APPEND OCR_SOURCES
+    src/pdf/doc.cpp
+    src/pdf/textlayer.cpp
+    src/pdf/ocr_pages.cpp
+  )
+else()
+  message(WARNING "未找到 ${MUPDF_DIR}/lib/libmupdf.lib，PDF 渲染/文字层功能不可用")
+endif()
+
+add_executable(ocrgui WIN32 ${OCR_SOURCES})
 target_include_directories(ocrgui PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party
@@ -65,6 +79,12 @@ target_link_libraries(ocrgui PRIVATE
   comdlg32
   ${ORT_DIR}/lib/onnxruntime.lib
 )
+
+if (EXISTS "${MUPDF_DIR}/lib/libmupdf.lib")
+  target_compile_definitions(ocrgui PRIVATE OCRGUI_HAS_MUPDF=1)
+  target_include_directories(ocrgui PRIVATE ${MUPDF_DIR}/include)
+  target_link_libraries(ocrgui PRIVATE ${MUPDF_DIR}/lib/libmupdf.lib)
+endif()
 
 # 运行期依赖：ORT dll 拷到 exe 旁边
 add_custom_command(TARGET ocrgui POST_BUILD
