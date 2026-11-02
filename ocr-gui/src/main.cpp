@@ -1,18 +1,31 @@
-// ocr-gui M0：Dear ImGui + GLFW 窗口骨架
+// ocr-gui：无参数启动 GUI；带参数走 CLI（--image ...）
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 
 #include <windows.h>
 #include <commdlg.h>
+#include <shellapi.h>
 #include <GLFW/glfw3.h>
 
 #include <cstdio>
 #include <string>
+#include <vector>
 
-static std::string g_pdfPath;
+#include "cli.h"
 
-static void OpenPdfDialog() {
+namespace {
+
+std::string g_pdfPath;
+
+std::string WideToUtf8(const wchar_t* s) {
+    const int n = WideCharToMultiByte(CP_UTF8, 0, s, -1, nullptr, 0, nullptr, nullptr);
+    std::string out(n > 0 ? n - 1 : 0, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, s, -1, out.data(), n, nullptr, nullptr);
+    return out;
+}
+
+void OpenPdfDialog() {
     wchar_t file[1024] = L"";
     OPENFILENAMEW ofn = {};
     ofn.lStructSize = sizeof(ofn);
@@ -21,15 +34,10 @@ static void OpenPdfDialog() {
     ofn.lpstrFile = file;
     ofn.nMaxFile = 1024;
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-    if (GetOpenFileNameW(&ofn)) {
-        int need = WideCharToMultiByte(CP_UTF8, 0, file, -1, nullptr, 0, nullptr, nullptr);
-        std::string utf8(need > 0 ? need - 1 : 0, '\0');
-        WideCharToMultiByte(CP_UTF8, 0, file, -1, utf8.data(), need, nullptr, nullptr);
-        g_pdfPath = utf8;
-    }
+    if (GetOpenFileNameW(&ofn)) g_pdfPath = WideToUtf8(file);
 }
 
-int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
+int RunGui() {
     if (!glfwInit()) return 1;
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
@@ -64,22 +72,22 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 
         ImGui::Begin("PDF OCR");
         if (ImGui::Button("打开 PDF...", ImVec2(140, 0))) OpenPdfDialog();
-        ImGui::TextWrapped("%s", g_pdfPath.empty() ? "（未选择文件）" : g_pdfPath.c_str());
+        ImGui::TextWrapped("%s", g_pdfPath.empty() ? "\uff08\u672a\u9009\u62e9\u6587\u4ef6\uff09" : g_pdfPath.c_str());
         ImGui::Separator();
-        ImGui::SliderInt("线程数", &jobs, 1, 16);
+        ImGui::SliderInt("\u7ebf\u7a0b\u6570", &jobs, 1, 16);
         ImGui::SliderInt("DPI", &dpi, 150, 400);
-        ImGui::SliderFloat("置信度阈值", &minScore, 0.1f, 0.9f, "%.2f");
+        ImGui::SliderFloat("\u7f6e\u4fe1\u5ea6\u9608\u503c", &minScore, 0.1f, 0.9f, "%.2f");
         ImGui::Separator();
         if (!g_pdfPath.empty()) {
-            if (ImGui::Button("开始识别", ImVec2(140, 0))) {
+            if (ImGui::Button("\u5f00\u59cb\u8bc6\u522b", ImVec2(140, 0))) {
                 // TODO(M3)：后台线程跑 OCR
             }
         } else {
             ImGui::BeginDisabled();
-            ImGui::Button("开始识别", ImVec2(140, 0));
+            ImGui::Button("\u5f00\u59cb\u8bc6\u522b", ImVec2(140, 0));
             ImGui::EndDisabled();
         }
-        ImGui::TextDisabled("M0 骨架：窗口已就绪，OCR 引擎与 PDF 渲染待接入");
+        ImGui::TextDisabled("M0 \u9aa8\u67b6\uff1a\u7a97\u53e3\u5c31\u7eea\uff0cOCR \u5f15\u64ce\u5df2\u5c31\u7eea\uff08CLI \u53ef\u7528\uff09");
         ImGui::End();
 
         ImGui::Render();
@@ -98,4 +106,28 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     glfwDestroyWindow(window);
     glfwTerminate();
     return 0;
+}
+
+}  // namespace
+
+int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
+    int argc = 0;
+    LPWSTR* wargv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (wargv && argc > 1) {
+        // 有参数 -> CLI 模式（需要把 stdout 接回父控制台）
+        std::vector<std::string> args;
+        args.reserve(argc);
+        for (int i = 0; i < argc; ++i) args.push_back(WideToUtf8(wargv[i]));
+        LocalFree(wargv);
+        if (!AttachConsole(ATTACH_PARENT_PROCESS)) AllocConsole();
+        FILE* f = nullptr;
+        freopen_s(&f, "CONOUT$", "w", stdout);
+        freopen_s(&f, "CONOUT$", "w", stderr);
+        std::vector<char*> argv;
+        argv.reserve(args.size());
+        for (auto& a : args) argv.push_back(const_cast<char*>(a.c_str()));
+        return RunCli(static_cast<int>(argv.size()), argv.data());
+    }
+    if (wargv) LocalFree(wargv);
+    return RunGui();
 }

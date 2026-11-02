@@ -6,7 +6,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 if (MSVC)
   add_compile_options(/utf-8 /MP)
+  add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
 endif()
+
+# ---------- 第三方依赖 ----------
+set(ORT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/onnxruntime-win-x64-1.20.1" CACHE PATH "ONNX Runtime 目录")
 
 include(FetchContent)
 
@@ -43,5 +47,27 @@ target_include_directories(imgui_backend PUBLIC
 )
 target_link_libraries(imgui_backend PUBLIC glfw)
 
-add_executable(ocrgui WIN32 src/main.cpp)
-target_link_libraries(ocrgui PRIVATE imgui_backend opengl32)
+# ---------- 主程序 ----------
+add_executable(ocrgui WIN32
+  src/main.cpp
+  src/cli.cpp
+  src/ocr/image.cpp
+  src/ocr/engine.cpp
+)
+target_include_directories(ocrgui PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party
+  ${ORT_DIR}/include
+)
+target_link_libraries(ocrgui PRIVATE
+  imgui_backend
+  opengl32
+  comdlg32
+  ${ORT_DIR}/lib/onnxruntime.lib
+)
+
+# 运行期依赖：ORT dll 拷到 exe 旁边
+add_custom_command(TARGET ocrgui POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${ORT_DIR}/lib/onnxruntime.dll" "$<TARGET_FILE_DIR:ocrgui>"
+)

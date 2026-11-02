@@ -42,3 +42,33 @@ $cmake = 'C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\Co
 产物：`C:\Users\xwtal\build\ocrgui\Release\ocrgui.exe`
 
 待接入：ONNX Runtime + RapidOCR 模型、MuPDF 渲染与文字层写回（M1/M2）。
+
+## M1 进度（2026-11-02）
+
+onnxruntime + PP-OCRv3 已接入，C++ 侧可独立完成「图像 -> 检测 -> 方向分类 -> 识别」全流程。
+
+```powershell
+# 首次：拷模型
+python ocr-gui/tools/fetch_models.py
+
+# 构建
+& $cmake --build C:\Users\xwtal\build\ocrgui --config Release
+
+# CLI 识别单张图片，输出 JSON
+C:\Users\xwtal\build\ocrgui\Release\ocrgui.exe --image page.png `
+    --model-dir ocr-gui/models --out result.json
+
+# 与 Python 版逐页对比（M1 验收工具）
+python ocr-gui/tools/compare_page.py "样本.pdf" 5
+```
+
+实测（GB/T 151-2026 第 5 页 @300dpi，2481x3509）：
+
+| 指标 | C++ | Python(rapidocr) |
+|---|---|---|
+| 文本框偏差 | dx -0.1px / dy -0.3px | 基准 |
+| 字符总数 | 767 | 750 |
+| 单页耗时 | 5.4 s | 10.6 s |
+
+已知差异：C++ 用轴对齐框裁剪，Python 用四点透视裁剪，导致个别行少/多一两个字符（多为空格）。
+下一步 M1.5：改成透视裁剪 + 合并行策略对齐 rapidocr；然后再进 M2（MuPDF 渲染与文字层写回）。
