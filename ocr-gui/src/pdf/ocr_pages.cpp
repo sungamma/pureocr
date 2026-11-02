@@ -141,7 +141,15 @@ bool RunPdfOcr(const OcrRunOptions& opt, const OcrProgress& progress, OcrRunStat
         ocr::EngineOptions eopt;
         eopt.modelDir = ToWide(opt.modelDir);
         eopt.minScore = opt.minScore;
-        eopt.threads = 0;
+        // 每个 worker 各自一个 ORT session：限制单 session 的线程数，
+        // 避免「线程数 × ORT 默认线程」把 CPU 过度订阅（实测 8 线程反而更慢）
+        {
+            const unsigned hw = std::thread::hardware_concurrency();
+            int perWorker = static_cast<int>(hw) / (threadCount > 0 ? threadCount : 1);
+            if (perWorker < 1) perWorker = 1;
+            if (perWorker > 8) perWorker = 8;
+            eopt.threads = perWorker;
+        }
         ocr::Engine engine;
         if (!engine.Init(eopt, &localErr)) {
             fail("模型加载失败: " + localErr);
