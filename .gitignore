@@ -11,10 +11,8 @@ cmake-build-*/
 *.lib
 *.exp
 
-# 依赖与模型（体积大，不入库）
+# 第三方依赖（体积大，不入库；模型已随仓库提供，见 ocr-gui/models）
 third_party/
-models/
-*.onnx
 
 # IDE
 .vs/
