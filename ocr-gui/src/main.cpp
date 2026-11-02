@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "cli.h"
+#include "util/path_util.h"
 #ifdef OCRGUI_HAS_MUPDF
 #include "pdf/ocr_pages.h"
 #endif
@@ -42,17 +43,21 @@ int g_threads = 4;
 int g_dpi = 300;
 
 std::string WideToUtf8(const wchar_t* s) {
+    if (!s) return std::string();
     const int n = WideCharToMultiByte(CP_UTF8, 0, s, -1, nullptr, 0, nullptr, nullptr);
-    std::string out(n > 0 ? n - 1 : 0, '\0');
-    if (n > 0) WideCharToMultiByte(CP_UTF8, 0, s, -1, out.data(), n, nullptr, nullptr);
-    return out;
+    if (n <= 1) return std::string();
+    std::vector<char> buf(static_cast<size_t>(n));  // 含结尾 0，避免写越界
+    WideCharToMultiByte(CP_UTF8, 0, s, -1, buf.data(), n, nullptr, nullptr);
+    return std::string(buf.data(), static_cast<size_t>(n - 1));
 }
 
 std::wstring Utf8ToWide(const std::string& s) {
+    if (s.empty()) return std::wstring();
     const int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
-    std::wstring out(n > 0 ? n - 1 : 0, L'\0');
-    if (n > 0) MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, out.data(), n);
-    return out;
+    if (n <= 1) return std::wstring();
+    std::vector<wchar_t> buf(static_cast<size_t>(n));  // 含结尾 0，避免写越界
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, buf.data(), n);
+    return std::wstring(buf.data(), static_cast<size_t>(n - 1));
 }
 
 std::string ExeDir() {
@@ -70,11 +75,7 @@ void PushLog(const std::string& line) {
 }
 
 std::string DefaultOutputPath(const std::string& input) {
-    namespace fs = std::filesystem;
-    fs::path p = fs::u8path(input);
-    const std::string stem = p.stem().u8string();
-    p.replace_filename(stem + u8"_可复制文字" + p.extension().u8string());
-    return p.u8string();
+    return util::InsertBeforeExtension(input, "_可复制文字");
 }
 
 void OpenPdfDialog() {
@@ -111,10 +112,9 @@ void SavePdfDialog() {
 }
 
 void OpenOutputFolder() {
-    namespace fs = std::filesystem;
     if (g_outPath.empty()) return;
-    const std::string dir = fs::u8path(g_outPath).parent_path().u8string();
-    if (dir.empty()) return;
+    const std::string dir = util::ParentDir(g_outPath);
+    if (dir.empty() || !std::filesystem::is_directory(std::filesystem::u8path(dir))) return;
     ShellExecuteW(nullptr, L"open", Utf8ToWide(dir).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 

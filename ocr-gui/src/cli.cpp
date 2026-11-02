@@ -1,5 +1,7 @@
 #include "cli.h"
 
+#include "util/path_util.h"
+
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -85,7 +87,7 @@ int RunPdfCli(const std::string &pdfPath, const std::string &outPdf, const std::
         outPath = fs::u8path(outPdf);
     } else {
         outPath = inPath;
-        outPath.replace_filename(inPath.stem().u8string() + u8"_可复制文字" + inPath.extension().u8string());
+        outPath = fs::u8path(util::InsertBeforeExtension(pdfPath, "_可复制文字"));
     }
 
     pdf::OcrRunOptions opt;
