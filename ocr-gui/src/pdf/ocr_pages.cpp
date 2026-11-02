@@ -33,6 +33,38 @@ struct PageResult {
     int width = 0;
     int height = 0;
     bool done = false;
+    bool fromCache = false;  // 结果来自页级缓存，无需再 OCR
+};
+
+/// 页级缓存默认位置：输出 PDF 同目录、同名前缀的 *_ocrcache.tsv
+std::string DefaultCachePath(const std::string& outPdf) {
+    const size_t slash = outPdf.find_last_of("\\/");
+    const size_t dot = outPdf.find_last_of('.');
+    const bool hasExt = dot != std::string::npos && (slash == std::string::npos || dot > slash);
+    const std::string stem = hasExt ? outPdf.substr(0, dot) : outPdf;
+    return stem + "_ocrcache.tsv";
+}
+
+/// 任务锁：独占打开 <输出>.lock，进程退出（含崩溃）由系统自动删除，
+/// 防止两个进程同时写同一个输出文件。
+class OutputLock {
+public:
+    ~OutputLock() {
+        if (h_ != INVALID_HANDLE_VALUE) CloseHandle(h_);
+    }
+    bool Acquire(const std::string& outputPath, std::string* err) {
+        const std::wstring path = ToWide(outputPath + ".lock");
+        h_ = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+        if (h_ == INVALID_HANDLE_VALUE) {
+            if (err) *err = "已有任务正在处理同一输出（锁被占用）：" + outputPath;
+            return false;
+        }
+        return true;
+    }
+
+private:
+    HANDLE h_ = INVALID_HANDLE_VALUE;
 };
 
 }  // namespace
@@ -94,6 +126,19 @@ bool RunPdfOcr(const OcrRunOptions& opt, const OcrProgress& progress, OcrRunStat
         return false;
     }
 
+    // 同一输出只允许一个任务，避免并发写坏文件
+    OutputLock outputLock;
+    if (!outputLock.Acquire(opt.outputPath, &message)) {
+        if (err) *err = message;
+        return false;
+    }
+
+    // 页级缓存路径（仅断点续跑时使用）
+    std::string cachePath;
+    if (opt.resume) {
+        cachePath = opt.cachePath.empty() ? DefaultCachePath(opt.outputPath) : opt.cachePath;
+    }
+
     TextLayer layer;
     TextLayerOptions topts;
     topts.fontPath = opt.fontPath;
@@ -115,6 +160,31 @@ bool RunPdfOcr(const OcrRunOptions& opt, const OcrProgress& progress, OcrRunStat
 
     std::vector<PageResult> results(static_cast<size_t>(n));
     std::atomic<int> next{0};
+
+    // 断点续跑：载入页级缓存，命中页直接复用（dpi 不一致视为无缓存）
+    LineCacheWriter cache;
+    int pendingOcr = n;
+    if (opt.resume) {
+        std::vector<OcrPageLines> cached;
+        if (LoadLineCache(cachePath, opt.dpi, &cached)) {
+            for (const auto& cp : cached) {
+                for (int i = 0; i < n; ++i) {
+                    if (pages[i] != cp.page || results[i].done) continue;
+                    results[i].lines = cp.lines;
+                    results[i].width = cp.width;
+                    results[i].height = cp.height;
+                    results[i].done = true;
+                    results[i].fromCache = true;
+                    --pendingOcr;
+                    break;
+                }
+            }
+        }
+        if (!cache.Open(cachePath, opt.dpi, &message)) {
+            if (err) *err = message;
+            return false;
+        }
+    }
     std::atomic<bool> failed{false};
     std::mutex mtx;
     std::condition_variable cv;
@@ -161,6 +231,7 @@ bool RunPdfOcr(const OcrRunOptions& opt, const OcrProgress& progress, OcrRunStat
         for (;;) {
             const int i = next.fetch_add(1);
             if (i >= n || failed.load()) return;
+            if (results[i].fromCache) continue;  // 命中缓存，跳过识别
             ocr::Image img;
             std::string e1;
             if (!wdoc.RenderPage(pages[i], opt.dpi, &img, &e1)) {
@@ -181,11 +252,15 @@ bool RunPdfOcr(const OcrRunOptions& opt, const OcrProgress& progress, OcrRunStat
     };
 
     std::vector<std::thread> pool;
-    pool.reserve(static_cast<size_t>(threadCount));
-    for (int i = 0; i < threadCount; ++i) pool.emplace_back(worker);
+    if (pendingOcr > 0) {  // 全部命中缓存时不启动 worker（省掉建模开销）
+        pool.reserve(static_cast<size_t>(threadCount));
+        for (int i = 0; i < threadCount; ++i) pool.emplace_back(worker);
+    }
 
     bool ok = true;
     int donePages = 0;
+    int cachedPages = 0;
+    int ocrPages = 0;
     int linesTotal = 0;
     for (int i = 0; i < n && ok; ++i) {
         {
@@ -201,14 +276,18 @@ bool RunPdfOcr(const OcrRunOptions& opt, const OcrProgress& progress, OcrRunStat
             ok = false;
             break;
         }
-        if (stats) {
-            OcrPageLines pl;
-            pl.page = pages[i];
-            pl.width = results[i].width;
-            pl.height = results[i].height;
-            pl.lines = results[i].lines;
-            stats->pageLines.push_back(std::move(pl));
+        OcrPageLines pl;
+        pl.page = pages[i];
+        pl.width = results[i].width;
+        pl.height = results[i].height;
+        pl.lines = results[i].lines;
+        if (results[i].fromCache) {
+            ++cachedPages;
+        } else {
+            ++ocrPages;
+            if (cache.IsOpen()) cache.Append(pl);  // 逐页落盘，随时可断点续跑
         }
+        if (stats) stats->pageLines.push_back(std::move(pl));
         ++donePages;
         linesTotal += static_cast<int>(results[i].lines.size());
         if (progress) progress(donePages, n, pages[i], static_cast<int>(results[i].lines.size()));
@@ -231,6 +310,8 @@ bool RunPdfOcr(const OcrRunOptions& opt, const OcrProgress& progress, OcrRunStat
         return false;
     }
 
+    cache.Close();  // 缓存只是中间产物，完成后关闭
+
     if (!opt.csvPath.empty()) {
         if (!stats) {
             if (err) *err = "导出 CSV 需要 stats 输出";  // 内部调用约定
@@ -248,6 +329,8 @@ bool RunPdfOcr(const OcrRunOptions& opt, const OcrProgress& progress, OcrRunStat
             CountLowScoreLines(stats->pageLines, opt.reviewScore > 0.0f ? opt.reviewScore : opt.minScore);
         stats->pageCount = donePages;
         stats->lineCount = linesTotal;
+        stats->cachedPages = cachedPages;
+        stats->ocrPages = ocrPages;
         stats->maskedFonts = layer.MaskedFonts();
         stats->maskedCodes = layer.MaskedCodes();
         stats->seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();

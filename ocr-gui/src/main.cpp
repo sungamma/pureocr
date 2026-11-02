@@ -49,6 +49,7 @@ double g_lastDpi = 300.0;
 int g_threads = 4;
 int g_dpi = 300;
 bool g_switchToPreview = false;
+bool g_resume = false;  // 断点续跑
 std::chrono::steady_clock::time_point g_startTime;
 
 #ifdef OCRGUI_HAS_MUPDF
@@ -226,6 +227,7 @@ void StartOcr() {
         opt.threads = threads;
         opt.minScore = minScore;
         opt.maskOriginal = true;
+        opt.resume = g_resume;
         opt.pages = pages;
 
         pdf::OcrRunStats stats;
@@ -257,6 +259,12 @@ void StartOcr() {
                           stats.pageCount, stats.lineCount, stats.maskedFonts, stats.seconds);
             PushLog(buf);
             g_result = buf;
+            if (stats.cachedPages > 0 || stats.ocrPages > 0) {
+                char cbuf[160];
+                std::snprintf(cbuf, sizeof(cbuf), "断点续跑：缓存命中 %d 页 / 新识别 %d 页",
+                              stats.cachedPages, stats.ocrPages);
+                PushLog(cbuf);
+            }
         }
         g_done = true;
         g_running = false;
@@ -298,6 +306,10 @@ void DrawOcrTab() {
     ImGui::SameLine();
     ImGui::TextDisabled("留空=全部，例：1-10,15");
     ImGui::SliderInt("线程数", &g_threads, 1, 16);
+    ImGui::SameLine();
+    ImGui::Checkbox("断点续跑", &g_resume);
+    ImGui::SameLine();
+    ImGui::TextDisabled("中断后重跑会跳过已完成页（同一输出）");
     ImGui::SliderInt("DPI", &g_dpi, 150, 400);
     ImGui::SliderFloat("置信度阈值", &g_minScore, 0.1f, 0.9f, "%.2f");
     ImGui::SameLine();

@@ -16,7 +16,9 @@ struct OcrRunOptions {
     int threads = 4;
     float minScore = 0.5f;    // 低于此分数直接丢弃
     float reviewScore = 0.75f; // 低于此分数标记「待复核」（只影响标记，不过滤）
-    std::string csvPath;       // 非空则导出逐行 CSV
+    std::string csvPath;
+    std::string cachePath;     // 页级缓存（断点续跑用）；为空则跟随输出文件命名
+    bool resume = false;       // 断点续跑：命中缓存页直接复用，只对未完成页跑 OCR       // 非空则导出逐行 CSV
     bool maskOriginal = true;  // 屏蔽原文字层，复制文字只输出 OCR 结果
     std::vector<int> pages;    // 0 基页号；空表示全部
 };
@@ -39,7 +41,9 @@ struct OcrRunStats {
     double saveSeconds = 0.0;   // 子集化 + 保存耗时
     /// 逐页识别框（GUI 预览叠加用）；只在成功返回时填充
     std::vector<OcrPageLines> pageLines;
-    int reviewLines = 0;  // 低于 reviewScore 的行数
+    int reviewLines = 0;
+    int cachedPages = 0;  // 断点续跑命中缓存的页数
+    int ocrPages = 0;     // 本次真正跑 OCR 的页数  // 低于 reviewScore 的行数
 };
 
 /// 进度回调：done/total 页数，pageIndex 为刚写入文字层的页，lines 为该页行数
