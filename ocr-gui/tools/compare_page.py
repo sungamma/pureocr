@@ -3,7 +3,7 @@
 
 用法：python tools/compare_page.py <pdf> <page1based> [--dpi 300]
 """
-import argparse, json, os, subprocess, sys, tempfile, time
+import argparse, difflib, json, os, subprocess, sys, tempfile, time
 
 import fitz
 import numpy as np
@@ -72,6 +72,18 @@ def main():
             dx.append(best["x0"] - p["x0"]); dy.append(best["y0"] - p["y0"])
     n = len(py)
     print(f"  文本一致  {same}/{n} ({same / max(n, 1):.1%})")
+    sims = []
+    for p in py:
+        best, bi = None, 0.0
+        for c in cpp:
+            o = overlap(p, c)
+            if o > bi:
+                bi, best = o, c
+        if best is not None and bi > 0:
+            sims.append(difflib.SequenceMatcher(None, p["text"], best["text"]).ratio())
+    if sims:
+        sims.sort(); k = len(sims)
+        print(f"  相似度    中位 {sims[k // 2]:.3f}  >=0.95 占比 {sum(1 for x in sims if x >= 0.95) / k:.1%}")
     if dx:
         dx.sort(); dy.sort(); k = len(dx)
         print(f"  框偏差    dx 中位 {dx[k // 2]:+.1f}px   dy 中位 {dy[k // 2]:+.1f}px")

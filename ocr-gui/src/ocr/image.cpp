@@ -6,6 +6,9 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+
 namespace ocr {
 
 bool LoadImageFile(const std::string &path, Image &out) {
@@ -17,6 +20,11 @@ bool LoadImageFile(const std::string &path, Image &out) {
     out.data.assign(px, px + static_cast<size_t>(w) * h * 3);
     stbi_image_free(px);
     return true;
+}
+
+bool SaveImagePng(const Image &img, const std::string &path) {
+    if (img.empty()) return false;
+    return stbi_write_png(path.c_str(), img.w, img.h, 3, img.data.data(), img.w * 3) != 0;
 }
 
 Image Resize(const Image &src, int newW, int newH) {

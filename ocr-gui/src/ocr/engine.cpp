@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <string>
 #include <thread>
@@ -122,9 +123,23 @@ struct Model {
 };
 
 struct DetBox {
-    float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    float x0 = 0, y0 = 0, x1 = 0, y1 = 0;   // 轴对齐框（对外使用）
+    float quad[4][2] = {};                  // 四角 tl,tr,br,bl（裁剪用）
     float score = 0;
 };
+
+/// 对齐 PaddleOCR get_mini_boxes 的角点排序：按 x 排序后依 y 关系定 tl,tr,br,bl
+void OrderQuad(float q[4][2]) {
+    int idx[4] = {0, 1, 2, 3};
+    std::stable_sort(idx, idx + 4, [&](int a, int b) { return q[a][0] < q[b][0]; });
+    const int i1 = (q[idx[1]][1] > q[idx[0]][1]) ? idx[0] : idx[1];
+    const int i4 = (q[idx[1]][1] > q[idx[0]][1]) ? idx[1] : idx[0];
+    const int i2 = (q[idx[3]][1] > q[idx[2]][1]) ? idx[2] : idx[3];
+    const int i3 = (q[idx[3]][1] > q[idx[2]][1]) ? idx[3] : idx[2];
+    const float out[4][2] = {{q[i1][0], q[i1][1]}, {q[i2][0], q[i2][1]},
+                             {q[i3][0], q[i3][1]}, {q[i4][0], q[i4][1]}};
+    for (int k = 0; k < 4; ++k) { q[k][0] = out[k][0]; q[k][1] = out[k][1]; }
+}
 
 }  // namespace
 
@@ -315,7 +330,9 @@ struct Engine::Impl {
             if (boxScore < opt.boxThresh) continue;
 
             // unclip：按面积/周长外扩（矩形等价于四边各外扩 d）
-            const float d = (rr.w * rr.h) * opt.unclipRatio / (2.f * (rr.w + rr.h));
+            float d = (rr.w * rr.h) * opt.unclipRatio / (2.f * (rr.w + rr.h));
+            // pyclipper 的 polygon 面积/周长按取整后的四点算，略小于连续值，这里补偿 1px
+            d = std::max(0.f, d - 1.f);
             const float ew = rr.w + 2 * d, eh = rr.h + 2 * d;
 
             const float ca = std::cos(rr.angle), sa = std::sin(rr.angle);
@@ -331,6 +348,8 @@ struct Engine::Impl {
                 maxY = std::max(maxY, py);
             }
 
+            if (std::min(ew, eh) < 5.f) continue;  // 对齐 min_size + 2
+
             DetBox b;
             b.x0 = std::max(0.f, minX * scaleX);
             b.y0 = std::max(0.f, minY * scaleY);
@@ -338,13 +357,35 @@ struct Engine::Impl {
             b.y1 = std::min(static_cast<float>(h), maxY * scaleY);
             b.score = boxScore;
             if (b.x1 - b.x0 < 3 || b.y1 - b.y0 < 3) continue;
+            // 四角按 tl,tr,br,bl 顺序（映射回原图坐标）
+            const float local[4][2] = {{-hw, -hh}, {hw, -hh}, {hw, hh}, {-hw, hh}};
+            for (int k = 0; k < 4; ++k) {
+                float px = rr.cx + local[k][0] * ca - local[k][1] * sa;
+                float py = rr.cy + local[k][0] * sa + local[k][1] * ca;
+                px = std::min(std::max(px * scaleX, 0.f), static_cast<float>(w) - 1);
+                py = std::min(std::max(py * scaleY, 0.f), static_cast<float>(h) - 1);
+                b.quad[k][0] = px;
+                b.quad[k][1] = py;
+            }
+            OrderQuad(b.quad);
             result.push_back(b);
         }
 
-        std::sort(result.begin(), result.end(), [](const DetBox &a, const DetBox &b) {
-            if (std::fabs(a.y0 - b.y0) > 10) return a.y0 < b.y0;
+        // 对齐 rapidocr 的 sorted_boxes：先按 (左上 y, 左上 x)，再做局部冒泡纠正
+        std::stable_sort(result.begin(), result.end(), [](const DetBox &a, const DetBox &b) {
+            if (a.y0 != b.y0) return a.y0 < b.y0;
             return a.x0 < b.x0;
         });
+        for (size_t i = 0; i + 1 < result.size(); ++i) {
+            for (size_t j = i + 1; j-- > 0;) {
+                if (std::fabs(result[j + 1].y0 - result[j].y0) < 10.f &&
+                    result[j + 1].x0 < result[j].x0) {
+                    std::swap(result[j], result[j + 1]);
+                } else {
+                    break;
+                }
+            }
+        }
         return result;
     }
 
@@ -376,12 +417,75 @@ struct Engine::Impl {
         }
     }
 
+    /// 四点裁剪（对齐 get_rotate_crop_image：外接边缘给边框像素，高宽比 >=1.5 时转 90°）
+    Image CropQuad(const Image &img, const DetBox &b) const {
+        const float dxW = std::hypot(b.quad[0][0] - b.quad[1][0], b.quad[0][1] - b.quad[1][1]);
+        const float dxW2 = std::hypot(b.quad[2][0] - b.quad[3][0], b.quad[2][1] - b.quad[3][1]);
+        const float dxH = std::hypot(b.quad[0][0] - b.quad[3][0], b.quad[0][1] - b.quad[3][1]);
+        const float dxH2 = std::hypot(b.quad[1][0] - b.quad[2][0], b.quad[1][1] - b.quad[2][1]);
+        int cw = static_cast<int>(std::max(dxW, dxW2));
+        int ch = static_cast<int>(std::max(dxH, dxH2));
+        if (cw < 2 || ch < 2) return Image{};
+
+        // 仿射映射：dest(0,0) -> quad[0]，dest 单位向量沿 quad[0]->quad[1]、quad[0]->quad[3]
+        const float ux = (b.quad[1][0] - b.quad[0][0]) / std::max(1.f, dxW);
+        const float uy = (b.quad[1][1] - b.quad[0][1]) / std::max(1.f, dxW);
+        const float vx = (b.quad[3][0] - b.quad[0][0]) / std::max(1.f, dxH);
+        const float vy = (b.quad[3][1] - b.quad[0][1]) / std::max(1.f, dxH);
+        const float su = dxW / cw, sv = dxH / ch;
+
+        Image dst;
+        dst.w = cw;
+        dst.h = ch;
+        dst.data.resize(static_cast<size_t>(cw) * ch * 3);
+        for (int y = 0; y < ch; ++y) {
+            const float v = y * sv;
+            for (int x = 0; x < cw; ++x) {
+                const float u = x * su;
+                const float sx = std::min(std::max(b.quad[0][0] + u * ux + v * vx, 0.f),
+                                          static_cast<float>(img.w - 1));
+                const float sy = std::min(std::max(b.quad[0][1] + u * uy + v * vy, 0.f),
+                                          static_cast<float>(img.h - 1));
+                const int x0 = static_cast<int>(sx), y0 = static_cast<int>(sy);
+                const int x1 = std::min(x0 + 1, img.w - 1), y1 = std::min(y0 + 1, img.h - 1);
+                const float wx = sx - x0, wy = sy - y0;
+                const uint8_t *p00 = img.at(x0, y0);
+                const uint8_t *p10 = img.at(x1, y0);
+                const uint8_t *p01 = img.at(x0, y1);
+                const uint8_t *p11 = img.at(x1, y1);
+                uint8_t *d = dst.at(x, y);
+                for (int c = 0; c < 3; ++c) {
+                    const float val = (p00[c] * (1 - wx) + p10[c] * wx) * (1 - wy) +
+                                      (p01[c] * (1 - wx) + p11[c] * wx) * wy;
+                    d[c] = static_cast<uint8_t>(std::min(255.f, std::max(0.f, val + 0.5f)));
+                }
+            }
+        }
+        if (static_cast<float>(dst.h) / dst.w >= 1.5f) {  // 竖排文字 -> 逆时针转 90°
+            Image rot;
+            rot.w = dst.h;
+            rot.h = dst.w;
+            rot.data.resize(dst.data.size());
+            for (int y = 0; y < dst.h; ++y) {
+                for (int x = 0; x < dst.w; ++x) {
+                    const uint8_t *sp = dst.at(x, y);
+                    uint8_t *dp = rot.at(y, dst.w - 1 - x);
+                    dp[0] = sp[0];
+                    dp[1] = sp[1];
+                    dp[2] = sp[2];
+                }
+            }
+            return rot;
+        }
+        return dst;
+    }
+
     /// 批量识别（对齐 rapidocr：按宽高比排序，每 6 张一批，批内取最大宽度）
     std::vector<std::pair<std::string, float>> RecogniseBatch(const std::vector<const Image *> &crops) {
         std::vector<std::pair<std::string, float>> res(crops.size(), {"", 0.f});
         if (crops.empty()) return res;
         const int H = 48;
-        const int kBatch = 6;
+        const int kBatch = 1;  // 每张独立算宽度，避免批内其它图影响结果
 
         std::vector<size_t> order(crops.size());
         for (size_t i = 0; i < order.size(); ++i) order[i] = i;
@@ -520,12 +624,20 @@ std::vector<TextLine> Engine::Recognize(const Image &img, std::string *err) {
         const int x1 = static_cast<int>(std::ceil(b.x1));
         const int y1 = static_cast<int>(std::ceil(b.y1));
         if (x1 - x0 < 4 || y1 - y0 < 4) continue;
-        Image crop = Crop(img, x0, y0, x1, y1);
+        Image crop = d_->CropQuad(img, b);
         if (crop.empty()) continue;
         bool clsOk = false;
         if (d_->opt.useAngleCls && d_->NeedRotate(crop, &clsOk)) crop = Rotate180(crop);
         kept.push_back(b);
         crops.push_back(std::move(crop));
+    }
+
+    if (!d_->opt.dumpCropsDir.empty()) {
+        for (size_t i = 0; i < crops.size(); ++i) {
+            char buf[512];
+            std::snprintf(buf, sizeof(buf), "%s/crop_%03zu.png", d_->opt.dumpCropsDir.c_str(), i);
+            SaveImagePng(crops[i], buf);
+        }
     }
 
     std::vector<const Image *> ptrs;

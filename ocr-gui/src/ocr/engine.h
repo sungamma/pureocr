@@ -25,6 +25,7 @@ struct EngineOptions {
     bool useAngleCls = true;
     float minScore = 0.5f;      // 识别结果过滤阈值
     int threads = 0;            // 0 = 交给 ORT 默认
+    std::string dumpCropsDir;   // 非空时把每张裁剪图存成 PNG（调试用）
 };
 
 class Engine {

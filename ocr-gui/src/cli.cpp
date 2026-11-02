@@ -46,7 +46,7 @@ std::string JsonEscape(const std::string &s) {
 }  // namespace
 
 int RunCli(int argc, char **argv) {
-    std::string imagePath, modelDir, outPath;
+    std::string imagePath, modelDir, outPath, dumpDir;
     float minScore = 0.5f;
     int threads = 0;
     for (int i = 1; i < argc; ++i) {
@@ -55,6 +55,8 @@ int RunCli(int argc, char **argv) {
             imagePath = argv[++i];
         } else if (a == "--model-dir" && i + 1 < argc) {
             modelDir = argv[++i];
+        } else if (a == "--dump-crops" && i + 1 < argc) {
+            dumpDir = argv[++i];
         } else if (a == "--out" && i + 1 < argc) {
             outPath = argv[++i];
         } else if (a == "--min-score" && i + 1 < argc) {
@@ -92,6 +94,7 @@ int RunCli(int argc, char **argv) {
     opt.modelDir = ToWide(modelDir);
     opt.minScore = minScore;
     opt.threads = threads;
+    opt.dumpCropsDir = dumpDir;
     ocr::Engine engine;
     std::string err;
     const auto t0 = std::chrono::steady_clock::now();

@@ -25,6 +25,9 @@ Image Resize(const Image &src, int newW, int newH);
 /// 裁剪（越界自动裁剪到图像范围内）
 Image Crop(const Image &src, int x0, int y0, int x1, int y1);
 
+/// 保存为 PNG（调试用）
+bool SaveImagePng(const Image &img, const std::string &path);
+
 /// 旋转 180 度
 Image Rotate180(const Image &src);
 
