@@ -6,7 +6,12 @@
 #include <windows.h>
 #include <commdlg.h>
 #include <shellapi.h>
+#define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3.h>
+#include <GLFW/glfw3native.h>
+
+#include "resource.h"
+#include "stb_image_write.h"
 
 #include <algorithm>
 #include <atomic>
@@ -15,6 +20,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <map>
 #include <mutex>
@@ -23,8 +29,10 @@
 #include <vector>
 
 #include "util/path_util.h"
+#include "util/utf8_io.h"
 #include "cli.h"
 #ifdef OCRGUI_HAS_MUPDF
+#include "pdf/doc.h"
 #include "pdf/lines_io.h"
 #include "pdf/ocr_pages.h"
 #include "pdf/preview.h"
@@ -52,6 +60,15 @@ double g_lastDpi = 300.0;
 int g_threads = 4;
 int g_dpi = 300;
 bool g_switchToPreview = false;
+#ifdef OCRGUI_SELFTEST
+bool g_selfTest = false;
+std::string g_shotPath;   // --shot <png>：渲染几帧后抓图（调试布局用）
+int g_shotFrame = -1;
+int g_shotW = 0;          // --shot <png> [w] [h]：可选，强制窗口尺寸便于按真实分辨率检查布局
+int g_shotH = 0;
+unsigned int g_shotFbo = 0;   // 离屏渲染，用于按真实分辨率检查布局
+unsigned int g_shotTex = 0;
+#endif
 bool g_resume = false;  // 断点续跑
 int g_presetIdx = -1;  // -1 = 未初始化，默认选「自动探测」
 bool g_mergeRow = true;   // 合并同一行的碎片
@@ -147,9 +164,9 @@ std::string SettingsPath() {
 }
 
 void LoadSettings() {
-    FILE* f = nullptr;
     const std::string path = SettingsPath();
-    if (fopen_s(&f, path.c_str(), "rb") != 0 || !f) return;
+    FILE* f = util::OpenUtf8(path, L"rb");
+    if (!f) return;
     std::string all;
     char buf[4096];
     size_t rd = 0;
@@ -203,9 +220,9 @@ void LoadSettings() {
 }
 
 void SaveSettings() {
-    FILE* f = nullptr;
     const std::string path = SettingsPath();
-    if (fopen_s(&f, path.c_str(), "wb") != 0 || !f) return;
+    FILE* f = util::OpenUtf8(path, L"wb");
+    if (!f) return;
     const ocr::ModelPreset* mp = CurrentPreset();
     std::fprintf(f, "# ocrgui 设置（自动生成，可删）\n");
     std::fprintf(f, "input=%s\n", g_pdfPath.c_str());
@@ -222,21 +239,95 @@ void SaveSettings() {
     std::fclose(f);
 }
 
+// 界面缩放：窗口是物理像素渲染时按显示器缩放放大（150% 屏按 1.5 倍）
+float g_uiScale = 1.0f;
+ImFont* g_fontTitle = nullptr;
+ImFont* g_fontBrand = nullptr;
+
+ImVec4 AccentColor() {
+    return g_darkTheme ? ImVec4(0.36f, 0.58f, 1.00f, 1.0f) : ImVec4(0.15f, 0.41f, 0.92f, 1.0f);
+}
+ImVec4 AccentHover() {
+    return g_darkTheme ? ImVec4(0.46f, 0.66f, 1.00f, 1.0f) : ImVec4(0.22f, 0.50f, 1.00f, 1.0f);
+}
+ImVec4 AccentActive() {
+    return g_darkTheme ? ImVec4(0.28f, 0.47f, 0.90f, 1.0f) : ImVec4(0.11f, 0.32f, 0.76f, 1.0f);
+}
+ImVec4 MutedColor() {
+    return g_darkTheme ? ImVec4(0.56f, 0.60f, 0.69f, 1.0f) : ImVec4(0.40f, 0.44f, 0.52f, 1.0f);
+}
+
 void ApplyTheme() {
+    const float s = g_uiScale;
+    ImGuiStyle& st = ImGui::GetStyle();
+    ImVec4* c = st.Colors;
+
     if (g_darkTheme) {
         ImGui::StyleColorsDark();
+        c[ImGuiCol_Text] = ImVec4(0.90f, 0.92f, 0.96f, 1.00f);
+        c[ImGuiCol_TextDisabled] = ImVec4(0.55f, 0.59f, 0.68f, 1.00f);
+        c[ImGuiCol_WindowBg] = ImVec4(0.06f, 0.07f, 0.09f, 1.00f);
+        c[ImGuiCol_ChildBg] = ImVec4(0.09f, 0.10f, 0.13f, 1.00f);
+        c[ImGuiCol_PopupBg] = ImVec4(0.11f, 0.12f, 0.16f, 1.00f);
+        c[ImGuiCol_Border] = ImVec4(0.19f, 0.22f, 0.28f, 1.00f);
+        c[ImGuiCol_FrameBg] = ImVec4(0.14f, 0.16f, 0.21f, 1.00f);
+        c[ImGuiCol_FrameBgHovered] = ImVec4(0.19f, 0.22f, 0.29f, 1.00f);
+        c[ImGuiCol_FrameBgActive] = ImVec4(0.23f, 0.27f, 0.35f, 1.00f);
+        c[ImGuiCol_Button] = ImVec4(0.17f, 0.20f, 0.27f, 1.00f);
+        c[ImGuiCol_ButtonHovered] = ImVec4(0.23f, 0.29f, 0.40f, 1.00f);
+        c[ImGuiCol_ButtonActive] = ImVec4(0.27f, 0.36f, 0.52f, 1.00f);
+        c[ImGuiCol_Header] = ImVec4(0.18f, 0.23f, 0.32f, 1.00f);
+        c[ImGuiCol_HeaderHovered] = ImVec4(0.22f, 0.29f, 0.42f, 1.00f);
+        c[ImGuiCol_HeaderActive] = ImVec4(0.26f, 0.35f, 0.52f, 1.00f);
+        c[ImGuiCol_SliderGrab] = ImVec4(0.36f, 0.58f, 1.00f, 1.00f);
+        c[ImGuiCol_SliderGrabActive] = ImVec4(0.46f, 0.66f, 1.00f, 1.00f);
+        c[ImGuiCol_CheckMark] = ImVec4(0.42f, 0.62f, 1.00f, 1.00f);
+        c[ImGuiCol_Separator] = ImVec4(0.19f, 0.22f, 0.28f, 1.00f);
+        c[ImGuiCol_ScrollbarBg] = ImVec4(0.08f, 0.09f, 0.12f, 1.00f);
+        c[ImGuiCol_ScrollbarGrab] = ImVec4(0.22f, 0.26f, 0.34f, 1.00f);
+        c[ImGuiCol_PlotHistogram] = ImVec4(0.36f, 0.58f, 1.00f, 1.00f);
     } else {
         ImGui::StyleColorsLight();
+        c[ImGuiCol_Text] = ImVec4(0.12f, 0.14f, 0.19f, 1.00f);
+        c[ImGuiCol_TextDisabled] = ImVec4(0.42f, 0.46f, 0.54f, 1.00f);
+        c[ImGuiCol_WindowBg] = ImVec4(0.95f, 0.96f, 0.98f, 1.00f);
+        c[ImGuiCol_ChildBg] = ImVec4(1.00f, 1.00f, 1.00f, 1.00f);
+        c[ImGuiCol_Border] = ImVec4(0.84f, 0.87f, 0.92f, 1.00f);
+        c[ImGuiCol_FrameBg] = ImVec4(0.96f, 0.97f, 0.99f, 1.00f);
+        c[ImGuiCol_FrameBgHovered] = ImVec4(0.93f, 0.95f, 0.99f, 1.00f);
+        c[ImGuiCol_FrameBgActive] = ImVec4(0.90f, 0.93f, 0.99f, 1.00f);
+        c[ImGuiCol_Button] = ImVec4(0.94f, 0.95f, 0.98f, 1.00f);
+        c[ImGuiCol_ButtonHovered] = ImVec4(0.88f, 0.91f, 0.98f, 1.00f);
+        c[ImGuiCol_ButtonActive] = ImVec4(0.82f, 0.87f, 0.97f, 1.00f);
+        c[ImGuiCol_Header] = ImVec4(0.90f, 0.93f, 0.99f, 1.00f);
+        c[ImGuiCol_HeaderHovered] = ImVec4(0.86f, 0.90f, 0.98f, 1.00f);
+        c[ImGuiCol_HeaderActive] = ImVec4(0.80f, 0.86f, 0.97f, 1.00f);
+        c[ImGuiCol_SliderGrab] = ImVec4(0.25f, 0.48f, 0.95f, 1.00f);
+        c[ImGuiCol_SliderGrabActive] = ImVec4(0.15f, 0.41f, 0.92f, 1.00f);
+        c[ImGuiCol_CheckMark] = ImVec4(0.15f, 0.41f, 0.92f, 1.00f);
+        c[ImGuiCol_Separator] = ImVec4(0.86f, 0.89f, 0.93f, 1.00f);
+        c[ImGuiCol_ScrollbarBg] = ImVec4(0.93f, 0.95f, 0.97f, 1.00f);
+        c[ImGuiCol_ScrollbarGrab] = ImVec4(0.75f, 0.79f, 0.86f, 1.00f);
+        c[ImGuiCol_PlotHistogram] = ImVec4(0.15f, 0.41f, 0.92f, 1.00f);
     }
-    ImGuiStyle& st = ImGui::GetStyle();
-    st.WindowRounding = 4.0f;
-    st.ChildRounding = 4.0f;
-    st.FrameRounding = 4.0f;
-    st.GrabRounding = 3.0f;
-    st.TabRounding = 4.0f;
+
+    st.WindowPadding = ImVec2(16.0f * s, 14.0f * s);
+    st.FramePadding = ImVec2(11.0f * s, 7.0f * s);
+    st.ItemSpacing = ImVec2(10.0f * s, 7.0f * s);
+    st.ItemInnerSpacing = ImVec2(8.0f * s, 6.0f * s);
+    st.CellPadding = ImVec2(8.0f * s, 4.0f * s);
+    st.FrameRounding = 6.0f * s;
+    st.GrabRounding = 5.0f * s;
+    st.PopupRounding = 6.0f * s;
+    st.ChildRounding = 10.0f * s;
+    st.WindowRounding = 12.0f * s;
+    st.ScrollbarSize = 12.0f * s;
+    st.ScrollbarRounding = 6.0f * s;
+    st.TabRounding = 6.0f * s;
     st.WindowBorderSize = 0.0f;
-    st.FramePadding = ImVec2(8.0f, 4.0f);
-    st.ItemSpacing = ImVec2(8.0f, 6.0f);
+    st.ChildBorderSize = 1.0f;
+    st.FrameBorderSize = 1.0f;   // 浅色下输入框需要描边才看得出边界
+    st.PopupBorderSize = 1.0f;
 }
 
 /// 把拖进来的 PDF 当作输入
@@ -370,6 +461,15 @@ void StartOcr() {
         g_log.clear();
         g_result.clear();
     }
+    // 上一轮的线程对象必须先 join 掉：给 joinable 的 std::thread 赋值会直接
+    // std::terminate（症状就是「第一次跑完，再点开始就闪退」）
+    if (g_worker.joinable()) g_worker.join();
+#ifdef OCRGUI_HAS_MUPDF
+    g_preview.Close();  // 释放上一轮对输出 PDF 的只读句柄，避免写同名文件被占用
+    g_texPath.clear();
+    g_texPage = -1;
+#endif
+
     const std::string pdf = g_pdfPath;
     const std::string out = g_outPath.empty() ? DefaultOutputPath(pdf) : g_outPath;
     std::vector<int> pages;
@@ -425,15 +525,16 @@ void StartOcr() {
             g_pageLines = std::move(stats.pageLines);
         }
 #endif
+        std::string summary;
         if (!ok) {
             PushLog("失败：" + err);
-            g_result = "失败：" + err;
+            summary = "失败：" + err;
         } else {
             char buf[256];
             std::snprintf(buf, sizeof(buf), "完成：%d 页 / %d 行，屏蔽原字体 %d 个，用时 %.1f 秒",
                           stats.pageCount, stats.lineCount, stats.maskedFonts, stats.seconds);
             PushLog(buf);
-            g_result = buf;
+            summary = buf;
             if (stats.cachedPages > 0 || stats.ocrPages > 0) {
                 char cbuf[160];
                 std::snprintf(cbuf, sizeof(cbuf), "断点续跑：缓存命中 %d 页 / 新识别 %d 页",
@@ -441,11 +542,136 @@ void StartOcr() {
                 PushLog(cbuf);
             }
         }
+        {
+            std::lock_guard<std::mutex> lk(g_mutex);
+            g_result = summary;  // UI 线程在读，加锁避免读到半截字符串
+        }
         g_done = true;
         g_running = false;
     });
 #endif
 }
+
+/// g_result 的加锁快照（UI 线程每帧读取）
+std::string ResultText() {
+    std::lock_guard<std::mutex> lk(g_mutex);
+    return g_result;
+}
+
+#ifdef OCRGUI_HAS_MUPDF
+/// 只读文档页数（同一路径只解析一次）；用于界面上显示「共 N 页」
+int PageCountForPath(const std::string& path) {
+    static std::string cachedPath;
+    static int cachedCount = -1;
+    if (path == cachedPath) return cachedCount < 0 ? 0 : cachedCount;
+    cachedPath = path;
+    cachedCount = -1;
+    if (!path.empty()) {
+        pdf::Document doc;
+        std::string err;
+        if (doc.Open(path, &err)) cachedCount = doc.PageCount();
+    }
+    return cachedCount < 0 ? 0 : cachedCount;
+}
+#endif
+
+#ifdef OCRGUI_SELFTEST
+// 离屏抓图用到的 3 个 FBO 入口（主程序不链接 GL loader，这里现取）
+// GL 1.1 头里没有 FBO 常量，补上
+#ifndef GL_FRAMEBUFFER
+#define GL_FRAMEBUFFER 0x8D40
+#define GL_COLOR_ATTACHMENT0 0x8CE0
+#define GL_FRAMEBUFFER_COMPLETE 0x8CD5
+#endif
+typedef void(APIENTRY* PFN_glGenFramebuffers)(GLsizei, GLuint*);
+typedef void(APIENTRY* PFN_glBindFramebuffer)(GLenum, GLuint);
+typedef void(APIENTRY* PFN_glFramebufferTexture2D)(GLenum, GLenum, GLenum, GLuint, GLint);
+typedef GLenum(APIENTRY* PFN_glCheckFramebufferStatus)(GLenum);
+static PFN_glGenFramebuffers p_glGenFramebuffers = nullptr;
+static PFN_glBindFramebuffer p_glBindFramebuffer = nullptr;
+static PFN_glFramebufferTexture2D p_glFramebufferTexture2D = nullptr;
+static PFN_glCheckFramebufferStatus p_glCheckFramebufferStatus = nullptr;
+static void LoadShotFboFuncs() {
+    p_glGenFramebuffers = reinterpret_cast<PFN_glGenFramebuffers>(wglGetProcAddress("glGenFramebuffers"));
+    p_glBindFramebuffer = reinterpret_cast<PFN_glBindFramebuffer>(wglGetProcAddress("glBindFramebuffer"));
+    p_glFramebufferTexture2D =
+        reinterpret_cast<PFN_glFramebufferTexture2D>(wglGetProcAddress("glFramebufferTexture2D"));
+    p_glCheckFramebufferStatus =
+        reinterpret_cast<PFN_glCheckFramebufferStatus>(wglGetProcAddress("glCheckFramebufferStatus"));
+}
+
+// 抓一帧画面存 PNG（这个环境没有可用桌面，只能自己读帧缓冲）
+void MaybeCaptureShot(int w, int h) {
+    static int frames = 0;
+    if (g_shotFrame < 0 || g_shotPath.empty()) return;
+    if (++frames < g_shotFrame) return;
+    std::vector<unsigned char> px(static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    if (g_shotFbo) {
+        p_glBindFramebuffer(GL_FRAMEBUFFER, g_shotFbo);
+    } else {
+        glReadBuffer(GL_BACK);
+    }
+    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+    const size_t row = static_cast<size_t>(w) * 4;
+    std::vector<unsigned char> flipped(px.size());
+    for (int y = 0; y < h; ++y) std::memcpy(&flipped[row * (h - 1 - y)], &px[row * y], row);
+    stbi_write_png(g_shotPath.c_str(), w, h, 4, flipped.data(), static_cast<int>(row));
+    if (FILE* f = nullptr; fopen_s(&f, (g_shotPath + ".txt").c_str(), "wb") == 0 && f) {
+        int ww = 0, wh = 0, fw = 0, fh = 0;
+        GLFWwindow* win = glfwGetCurrentContext();
+        glfwGetWindowSize(win, &ww, &wh);
+        glfwGetFramebufferSize(win, &fw, &fh);
+        float sx = 1.0f, sy = 1.0f;
+        glfwGetWindowContentScale(win, &sx, &sy);
+        ImDrawData* dd = ImGui::GetDrawData();
+        std::fprintf(f, "render=%dx%d window=%dx%d framebuffer=%dx%d contentScale=%.2fx%.2f\n",
+                     w, h, ww, wh, fw, fh, sx, sy);
+        std::fprintf(f, "drawData=%p lists=%d vtx=%d idx=%d glError=%d metricsVtx=%d\n", (void*)dd,
+                     dd ? dd->CmdListsCount : -1, dd ? dd->TotalVtxCount : -1,
+                     dd ? dd->TotalIdxCount : -1, (int)glGetError(), ImGui::GetIO().MetricsRenderVertices);
+        std::fclose(f);
+    }
+    glfwSetWindowShouldClose(glfwGetCurrentContext(), 1);
+}
+
+// ---- 仅测试用（cmake -DCMAKE_CXX_FLAGS=/DOCRGUI_SELFTEST）：自动连跑两轮识别 ----
+bool g_selfTestOk = false;
+
+void SelfTestStep(GLFWwindow* window) {
+    static int phase = 0;
+    static int idleFrames = 0;
+    if (phase == 0) {
+        if (g_pdfPath.empty() || g_modelDir.empty()) {
+            PushLog("[selftest] 缺少输入或模型目录，无法测试");
+            glfwSetWindowShouldClose(window, 1);
+            phase = 9;
+            return;
+        }
+        PushLog("[selftest] 第 1 轮开始");
+        StartOcr();
+        phase = 1;
+        return;
+    }
+    if (phase != 1 && phase != 2) return;
+    if (g_running) {
+        idleFrames = 0;
+        return;
+    }
+    if (++idleFrames < 20) return;   // 等 UI 收尾几帧再点第二次
+    idleFrames = 0;
+    if (phase == 1) {
+        PushLog("[selftest] 第 2 轮开始（这就是原来闪退的那一步）");
+        StartOcr();
+        phase = 2;
+    } else {
+        PushLog("[selftest] 两轮都完成，没有崩溃");
+        g_selfTestOk = true;
+        glfwSetWindowShouldClose(window, 1);
+        phase = 3;
+    }
+}
+#endif
 
 std::string FmtDur(double sec) {
     if (sec < 0) sec = 0;
@@ -457,114 +683,287 @@ std::string FmtDur(double sec) {
     return std::to_string(m / 60) + " 时 " + std::to_string(m % 60) + " 分";
 }
 
-/// 「识别」页
-void DrawOcrTab() {
-    if (ImGui::Button("打开 PDF...", ImVec2(140, 0)) && !g_running) OpenPdfDialog();
-    ImGui::SameLine();
-    if (ImGui::Checkbox("深色主题", &g_darkTheme)) ApplyTheme();
-    if (g_pdfPath.empty()) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("或把 PDF 拖进窗口");
-    }
-    ImGui::SameLine();
-    ImGui::TextWrapped("%s", g_pdfPath.empty() ? "（未选择文件）" : g_pdfPath.c_str());
-    ImGui::TextWrapped("输出：%s", g_outPath.empty() ? "（自动）" : g_outPath.c_str());
-    ImGui::SameLine();
-    if (!g_running) {
-        if (ImGui::SmallButton("另存为...")) SavePdfDialog();
-    }
+// ---------------- 通用小部件 ----------------
+void SectionLabel(const char* text) {
+    ImGui::Dummy(ImVec2(0, 4.0f * g_uiScale));
+    ImGui::TextColored(AccentColor(), "%s", text);
     ImGui::Separator();
+    ImGui::Dummy(ImVec2(0, 1.0f * g_uiScale));
+}
 
-    static char modelBuf[512] = "";
-    if (modelBuf[0] == '\0' && !g_modelDir.empty()) {
-        std::snprintf(modelBuf, sizeof(modelBuf), "%s", g_modelDir.c_str());
-    }
-    ImGui::SetNextItemWidth(360);
-    if (ImGui::InputText("模型目录", modelBuf, sizeof(modelBuf))) g_modelDir = modelBuf;
-    if (g_presetIdx < 0) g_presetIdx = DefaultPresetIndex();
-    {
-        int pc = 0;
-        const ocr::ModelPreset *presets = ocr::ModelPresetList(&pc);
-        static std::vector<const char *> labels;
-        if (static_cast<int>(labels.size()) != pc) {
-            labels.clear();
-            for (int i = 0; i < pc; ++i) labels.push_back(presets[i].label);
+void FieldLabel(const char* text) { ImGui::TextColored(MutedColor(), "%s", text); }
+
+/// 单行显示，超宽自动截断成 "…"
+void TextEllipsis(const char* text, ImVec4 color) {
+    const float avail = ImGui::GetContentRegionAvail().x;
+    std::string shown(text ? text : "");
+    if (avail > 8.0f && ImGui::CalcTextSize(shown.c_str()).x > avail) {
+        while (!shown.empty() && ImGui::CalcTextSize((shown + "…").c_str()).x > avail) {
+            size_t i = shown.size();
+            do {
+                --i;
+            } while (i > 0 && (static_cast<unsigned char>(shown[i]) & 0xC0) == 0x80);
+            shown.erase(i);
         }
-        ImGui::SetNextItemWidth(240);
-        ImGui::Combo("模型", &g_presetIdx, labels.data(), pc);
-        ImGui::SameLine();
-        ImGui::Checkbox("合并同行碎片", &g_mergeRow);
-        ImGui::SameLine();
-        ImGui::TextDisabled("（换模型会自动让断点缓存失效）");
+        shown += "…";
     }
-    ImGui::SetNextItemWidth(360);
-    static char pageBuf[128] = "";
-    if (ImGui::InputText("页范围", pageBuf, sizeof(pageBuf))) g_pageSpec = pageBuf;
-    ImGui::SameLine();
-    ImGui::TextDisabled("留空=全部，例：1-10,15");
-    ImGui::SliderInt("线程数", &g_threads, 1, 16);
-    ImGui::SameLine();
-    ImGui::Checkbox("断点续跑", &g_resume);
-    ImGui::SameLine();
-    ImGui::TextDisabled("中断后重跑会跳过已完成页（同一输出）");
-    ImGui::SliderInt("DPI", &g_dpi, 150, 400);
-    ImGui::SliderFloat("置信度阈值", &g_minScore, 0.1f, 0.9f, "%.2f");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(160);
-    ImGui::SliderFloat("复核阈值", &g_reviewScore, 0.5f, 0.95f, "%.2f");
-    ImGui::SameLine();
-    ImGui::TextDisabled("低于此分数标为待复核");
-    ImGui::Separator();
+    ImGui::TextColored(color, "%s", shown.c_str());
+}
 
-    const bool canStart = !g_pdfPath.empty() && !g_running && !g_modelDir.empty();
+void DrawLogPane(float height) {
+    const ImVec4 bg = ImGui::ColorConvertU32ToFloat4(
+        g_darkTheme ? IM_COL32(12, 14, 19, 255) : IM_COL32(250, 251, 253, 255));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, bg);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f * g_uiScale, 8.0f * g_uiScale));
+    ImGui::BeginChild("##log", ImVec2(0, height),
+                      ImGuiChildFlags_Border | ImGuiChildFlags_AlwaysUseWindowPadding);
+    {
+        static bool stick = true;
+        if (ImGui::GetScrollY() < ImGui::GetScrollMaxY() - 4.0f) stick = false;
+        std::lock_guard<std::mutex> lk(g_mutex);
+        if (g_log.empty() && !g_running) {
+            ImGui::TextColored(MutedColor(), "日志会显示在这里");
+        }
+        for (const auto& l : g_log) ImGui::TextUnformatted(l.c_str());
+        if (g_running) ImGui::TextUnformatted("……");
+        if (stick) ImGui::SetScrollHereY(1.0f);
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
+}
+
+/// 左侧控制栏：参数区可滚动，底部固定「开始识别 + 进度 + 日志」
+void DrawSidebar() {
+    const float s = g_uiScale;
+    const bool running = g_running.load();
+    const std::string resultText = ResultText();
+
+    // 参数区高度跟着内容走（上一帧量出来的），多出来的高度全给日志，避免侧栏中间一片空白
+    static float sContentH = 0.0f;
+    const float padY = ImGui::GetStyle().WindowPadding.y;
+    const float availY = ImGui::GetContentRegionAvail().y;
+    float bottomReserve = 46.0f * s + 12.0f * s + 130.0f * s;
+    if (running) {
+        bottomReserve += 34.0f * s;
+    } else if (!resultText.empty()) {
+        bottomReserve += 100.0f * s;
+    }
+    const float maxScrollH = std::max(160.0f * s, availY - bottomReserve);
+    float scrollH = maxScrollH;
+    if (sContentH > 0.0f) scrollH = std::min(sContentH + padY, maxScrollH);
+    scrollH = std::max(scrollH, std::min(160.0f * s, maxScrollH));
+
+    ImGui::BeginChild("##sideScroll", ImVec2(0, scrollH), ImGuiChildFlags_None);
+    {
+        // ---- 品牌行 ----
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 bp = ImGui::GetCursorScreenPos();
+        const float box = 40.0f * s;
+        dl->AddRectFilled(bp, ImVec2(bp.x + box, bp.y + box), ImGui::GetColorU32(AccentColor()),
+                          11.0f * s);
+        if (g_fontBrand) {
+            const char* brand = "OCR";
+            const ImVec2 ts = g_fontBrand->CalcTextSizeA(g_fontBrand->FontSize, FLT_MAX, 0.0f, brand);
+            dl->AddText(g_fontBrand, g_fontBrand->FontSize,
+                        ImVec2(bp.x + (box - ts.x) * 0.5f, bp.y + (box - ts.y) * 0.5f),
+                        IM_COL32(255, 255, 255, 255), brand);
+        }
+        ImGui::Dummy(ImVec2(box, box));
+        ImGui::SameLine(0.0f, 12.0f * s);
+        ImGui::BeginGroup();
+        if (g_fontTitle) ImGui::PushFont(g_fontTitle);
+        ImGui::TextUnformatted("PDF OCR");
+        if (g_fontTitle) ImGui::PopFont();
+        ImGui::TextColored(MutedColor(), "扫描版 PDF → 可搜索文字");
+        ImGui::EndGroup();
+
+        // ---- 文件 ----
+        SectionLabel("文件");
+        {
+            const float saveW = 100.0f * s;
+            ImGui::BeginDisabled(running);
+            if (ImGui::Button("选择 PDF 文件...", ImVec2(-saveW - 8.0f * s, 40.0f * s))) {
+                OpenPdfDialog();
+            }
+            ImGui::SameLine(0.0f, 8.0f * s);
+            if (ImGui::Button("另存为…", ImVec2(saveW, 40.0f * s))) SavePdfDialog();
+            ImGui::EndDisabled();
+        }
+        if (g_pdfPath.empty()) {
+            ImGui::TextColored(MutedColor(), "未选择（也可以把 PDF 直接拖进窗口）");
+        } else {
+            TextEllipsis(g_pdfPath.c_str(), MutedColor());
+        }
+        if (!g_outPath.empty()) TextEllipsis(("→ " + g_outPath).c_str(), MutedColor());
+
+        // ---- 识别设置 ----
+        SectionLabel("识别设置");
+
+        static char modelBuf[512] = "";
+        if (modelBuf[0] == '\0' && !g_modelDir.empty()) {
+            std::snprintf(modelBuf, sizeof(modelBuf), "%s", g_modelDir.c_str());
+        }
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(MutedColor(), "模型目录");
+        ImGui::SameLine(112.0f * s);
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::InputText("##modeldir", modelBuf, sizeof(modelBuf))) g_modelDir = modelBuf;
+
+        if (g_presetIdx < 0) g_presetIdx = DefaultPresetIndex();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(MutedColor(), "识别模型");
+        ImGui::SameLine(112.0f * s);
+        {
+            int pc = 0;
+            const ocr::ModelPreset* presets = ocr::ModelPresetList(&pc);
+            static std::vector<std::string> labelStore;
+            static std::vector<const char*> labels;
+            static std::string labelKey;
+            if (labelKey != g_modelDir || static_cast<int>(labels.size()) != pc) {
+                labelKey = g_modelDir;
+                labelStore.clear();
+                labels.clear();
+                for (int i = 0; i < pc; ++i) {
+                    std::string text = presets[i].label;
+                    bool missing = false;
+                    if (!g_modelDir.empty()) {
+                        for (const char* f : {presets[i].det, presets[i].rec}) {
+                            if (f && f[0] && !FileExistsUtf8(g_modelDir + "\\" + f)) missing = true;
+                        }
+                    }
+                    if (missing) text += "  [缺模型]";
+                    labelStore.push_back(text);
+                }
+                for (const auto& text : labelStore) labels.push_back(text.c_str());
+            }
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            ImGui::Combo("##preset", &g_presetIdx, labels.data(), pc);
+        }
+
+        static char pageBuf[128] = "";
+        static bool pageBufInit = false;
+        if (!pageBufInit) {
+            // 设置里可能存着上次的页范围，必须回显：否则输入框看着是空的，
+            // 实际却只跑那几页（典型症状：10 页文件只识别了前 3 页）
+            std::snprintf(pageBuf, sizeof(pageBuf), "%s", g_pageSpec.c_str());
+            pageBufInit = true;
+        }
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(MutedColor(), "页范围");
+        ImGui::SameLine(112.0f * s);
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::InputTextWithHint("##pages", "留空 = 全部，例 1-10,15", pageBuf, sizeof(pageBuf))) {
+            g_pageSpec = pageBuf;
+        }
+#ifdef OCRGUI_HAS_MUPDF
+        {
+            const int pdfPages = PageCountForPath(g_pdfPath);
+            std::vector<int> sel;
+            const bool parsed = !g_pageSpec.empty() && pdf::ParsePageSpec(g_pageSpec, &sel);
+            if (parsed && pdfPages > 0) {
+                ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.35f, 1.0f), "共 %d 页，只处理指定的 %d 页",
+                                   pdfPages, static_cast<int>(sel.size()));
+            } else if (pdfPages > 0) {
+                ImGui::TextColored(MutedColor(), "共 %d 页，全部处理", pdfPages);
+            }
+        }
+#endif
+        if (!g_modelDir.empty()) {
+            int pc = 0;
+            const ocr::ModelPreset* presets = ocr::ModelPresetList(&pc);
+            if (g_presetIdx >= 0 && g_presetIdx < pc) {
+                const char* det = presets[g_presetIdx].det;
+                if (det && det[0] && !FileExistsUtf8(g_modelDir + "\\" + det)) {
+                    ImGui::TextColored(ImVec4(0.95f, 0.55f, 0.35f, 1.0f),
+                                       "缺 %s（先跑 fetch_models.py --server）", det);
+                }
+            }
+        }
+
+        const float gap = 14.0f * s;
+        const float halfW = (ImGui::GetContentRegionAvail().x - gap) * 0.5f;
+
+        ImGui::BeginGroup();
+        FieldLabel("线程数");
+        ImGui::SetNextItemWidth(halfW);
+        ImGui::SliderInt("##threads", &g_threads, 1, 16);
+        ImGui::EndGroup();
+        ImGui::SameLine(0.0f, gap);
+        ImGui::BeginGroup();
+        FieldLabel("渲染 DPI");
+        ImGui::SetNextItemWidth(halfW);
+        ImGui::SliderInt("##dpi", &g_dpi, 150, 400);
+        ImGui::EndGroup();
+
+        ImGui::BeginGroup();
+        FieldLabel("最低置信度");
+        ImGui::SetNextItemWidth(halfW);
+        ImGui::SliderFloat("##minscore", &g_minScore, 0.10f, 0.90f, "%.2f");
+        ImGui::EndGroup();
+        ImGui::SameLine(0.0f, gap);
+        ImGui::BeginGroup();
+        FieldLabel("复核阈值");
+        ImGui::SetNextItemWidth(halfW);
+        ImGui::SliderFloat("##reviewscore", &g_reviewScore, 0.50f, 0.95f, "%.2f");
+        ImGui::EndGroup();
+
+        ImGui::Checkbox("断点续跑", &g_resume);
+        ImGui::SameLine(0.0f, 16.0f * s);
+        ImGui::Checkbox("合并同行碎片", &g_mergeRow);
+        ImGui::SameLine(0.0f, 16.0f * s);
+        if (ImGui::Checkbox("深色主题", &g_darkTheme)) ApplyTheme();
+        sContentH = ImGui::GetCursorPosY();  // 记下参数区实际高度
+    }
+    ImGui::EndChild();
+
+    // ---- 开始识别（固定在底部）----
+    ImGui::Dummy(ImVec2(0, 2.0f * s));
+    const bool canStart = !g_pdfPath.empty() && !running && !g_modelDir.empty();
     if (!canStart) ImGui::BeginDisabled();
-    if (ImGui::Button("开始识别", ImVec2(140, 0))) StartOcr();
+    ImGui::PushStyleColor(ImGuiCol_Button, AccentColor());
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, AccentHover());
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, AccentActive());
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 9.0f * s);
+    if (ImGui::Button(running ? "识别中……" : "开始识别", ImVec2(-FLT_MIN, 46.0f * s))) StartOcr();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(3);
     if (!canStart) ImGui::EndDisabled();
 
     const int total = g_totalPages.load();
     const int done = g_donePages.load();
-    if (g_running && total > 0) {
-        const double elapsed = std::chrono::duration<double>(
-                                   std::chrono::steady_clock::now() - g_startTime)
-                                   .count();
-        const double eta =
-            done > 0 ? elapsed / done * static_cast<double>(total - done) : 0.0;
-        char overlay[160];
-        std::snprintf(overlay, sizeof(overlay), "%d/%d 页  已用 %s  剩余约 %s", done, total,
+    if (running && total > 0) {
+        const double elapsed =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - g_startTime).count();
+        const double eta = done > 0 ? elapsed / done * static_cast<double>(total - done) : 0.0;
+        char overlay[176];
+        std::snprintf(overlay, sizeof(overlay), "%d/%d 页 · 已用 %s · 剩余 %s", done, total,
                       FmtDur(elapsed).c_str(), done > 0 ? FmtDur(eta).c_str() : "计算中");
-        ImGui::SameLine();
-        ImGui::ProgressBar(static_cast<float>(done) / static_cast<float>(total), ImVec2(-1, 0),
-                           overlay);
-    } else if (!g_result.empty()) {
-        ImGui::SameLine();
-        ImGui::TextUnformatted(g_result.c_str());
+        ImGui::Dummy(ImVec2(0, 2.0f * s));
+        ImGui::ProgressBar(static_cast<float>(done) / static_cast<float>(total),
+                           ImVec2(-FLT_MIN, 26.0f * s), overlay);
+    } else if (!resultText.empty()) {
+        const bool failed = resultText.rfind("失败", 0) == 0;
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextColored(failed ? ImVec4(0.95f, 0.45f, 0.42f, 1.0f)
+                                  : ImVec4(0.35f, 0.72f, 0.45f, 1.0f),
+                           "%s", resultText.c_str());
+        ImGui::PopTextWrapPos();
         if (!g_outPath.empty()) {
-            ImGui::SameLine();
-            if (ImGui::SmallButton("打开输出目录")) OpenOutputFolder();
-            ImGui::SameLine();
-            if (ImGui::SmallButton("查看识别框")) g_switchToPreview = true;
-            ImGui::SameLine();
-            if (ImGui::SmallButton("导出复核 CSV")) ExportReviewCsv();
-            ImGui::SameLine();
-            if (ImGui::SmallButton("回灌复核 CSV")) PickFixCsvDialog();
-            if (!g_fixCsv.empty()) {
-                ImGui::SameLine();
-                ImGui::TextDisabled("已选 %s", g_fixCsv.c_str());
-            }
+            const float bw = (ImGui::GetContentRegionAvail().x - 2.0f * 8.0f * s) / 3.0f;
+            if (ImGui::Button("打开目录", ImVec2(bw, 32.0f * s))) OpenOutputFolder();
+            ImGui::SameLine(0.0f, 8.0f * s);
+            if (ImGui::Button("导出 CSV", ImVec2(bw, 32.0f * s))) ExportReviewCsv();
+            ImGui::SameLine(0.0f, 8.0f * s);
+            if (ImGui::Button("回灌 CSV", ImVec2(bw, 32.0f * s))) PickFixCsvDialog();
+            if (!g_fixCsv.empty()) TextEllipsis(("已选：" + g_fixCsv).c_str(), MutedColor());
         }
     }
 
-    ImGui::Separator();
-    ImGui::TextUnformatted("日志");
-    ImGui::BeginChild("log", ImVec2(0, 0), true);
-    {
-        std::lock_guard<std::mutex> lk(g_mutex);
-        for (const auto& l : g_log) ImGui::TextUnformatted(l.c_str());
-        if (g_running) ImGui::TextUnformatted("……");
-    }
-    ImGui::EndChild();
+    // ---- 日志（占满剩余）----
+    ImGui::Dummy(ImVec2(0, 8.0f * s));
+    DrawLogPane(std::max(120.0f * s, ImGui::GetContentRegionAvail().y));
 }
-
 #ifdef OCRGUI_HAS_MUPDF
 void UploadTexture(const std::vector<unsigned char>& rgba, int w, int h) {
     if (!g_tex) glGenTextures(1, &g_tex);
@@ -578,19 +977,33 @@ void UploadTexture(const std::vector<unsigned char>& rgba, int w, int h) {
     g_texError.clear();
 }
 
-/// 「预览」页：渲染页面并叠加 OCR 识别框，用来检查文字层有没有错位
-void DrawPreviewTab() {
+void CenterText(const char* text, ImVec4 color) {
+    const ImVec2 ts = ImGui::CalcTextSize(text);
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (ImGui::GetContentRegionAvail().x - ts.x) * 0.5f);
+    ImGui::TextColored(color, "%s", text);
+}
+
+/// 右侧预览区：页导航 + 常驻画布（竖版页面按高度铺满）
+void DrawStage() {
+    const float s = g_uiScale;
     if (g_pdfPath.empty()) {
-        ImGui::TextUnformatted("先在「识别」页打开一个 PDF。");
+        const ImVec2 avail = ImGui::GetContentRegionAvail();
+        ImGui::Dummy(ImVec2(0, std::max(24.0f, avail.y * 0.34f)));
+        if (g_fontTitle) ImGui::PushFont(g_fontTitle);
+        CenterText("等待 PDF", MutedColor());
+        if (g_fontTitle) ImGui::PopFont();
+        ImGui::Dummy(ImVec2(0, 8.0f * s));
+        CenterText("点左侧「选择 PDF 文件」，或者把文件直接拖进窗口", MutedColor());
         return;
     }
+
     const bool outReady = g_done && !g_outPath.empty() &&
                           std::filesystem::exists(std::filesystem::u8path(g_outPath));
     const std::string target = outReady ? g_outPath : g_pdfPath;
 
     std::string openErr;
     if (!g_preview.Open(target, &openErr)) {
-        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "打开失败：%s", openErr.c_str());
+        ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.42f, 1.0f), "打开失败：%s", openErr.c_str());
         return;
     }
     const int pageCount = g_preview.PageCount();
@@ -601,49 +1014,7 @@ void DrawPreviewTab() {
     if (g_previewPage > pageCount - 1) g_previewPage = pageCount - 1;
     if (g_previewPage < 0) g_previewPage = 0;
 
-    if (outReady) {
-        ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.6f, 1.0f), "预览 OCR 产物：%s", target.c_str());
-    } else {
-        ImGui::TextWrapped("预览原文件：%s", target.c_str());
-    }
-
-    int pageNo = g_previewPage + 1;
-    ImGui::SetNextItemWidth(170);
-    if (ImGui::SliderInt("页码", &pageNo, 1, pageCount)) g_previewPage = pageNo - 1;
-    ImGui::SameLine();
-    if (ImGui::SmallButton("上一页")) {
-        if (g_previewPage > 0) --g_previewPage;
-    }
-    ImGui::SameLine();
-    if (ImGui::SmallButton("下一页")) {
-        if (g_previewPage < pageCount - 1) ++g_previewPage;
-    }
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(150);
-    ImGui::SliderFloat("预览 DPI", &g_previewDpi, 72.0f, 200.0f, "%.0f");
-    ImGui::Checkbox("显示识别框", &g_showBoxes);
-    ImGui::SameLine();
-    ImGui::Checkbox("只看低置信度", &g_onlyLowConf);
-
-    // 页号 / DPI / 文件变化时才重新渲染
-    if (g_texPath != target || g_texPage != g_previewPage ||
-        std::fabs(g_texDpi - g_previewDpi) > 0.5f) {
-        std::vector<unsigned char> rgba;
-        int w = 0, h = 0;
-        std::string rerr;
-        if (g_preview.Render(g_previewPage, g_previewDpi, &rgba, &w, &h, &rerr)) {
-            UploadTexture(rgba, w, h);
-            g_texPath = target;
-            g_texPage = g_previewPage;
-            g_texDpi = g_previewDpi;
-        } else {
-            g_texError = rerr;
-        }
-    }
-    if (!g_texError.empty()) {
-        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "渲染失败：%s", g_texError.c_str());
-    }
-
+    // 本页识别结果（供叠加框 / 提示用）
     const pdf::OcrPageLines* pl = nullptr;
     for (const auto& pg : g_pageLines) {
         if (pg.page == g_previewPage) {
@@ -651,64 +1022,136 @@ void DrawPreviewTab() {
             break;
         }
     }
-    if (pl && !pl->lines.empty()) {
-        int lowCount = 0;
-        for (const auto& ln : pl->lines) {
-            if (ln.score < g_reviewScore) ++lowCount;
+
+    // ---- 工具条：第一行导航 ----
+    const float rowH = 32.0f * s;
+    if (ImGui::Button("<", ImVec2(36.0f * s, rowH)) && g_previewPage > 0) --g_previewPage;
+    ImGui::SameLine(0.0f, 6.0f * s);
+    {
+        int pageNo = g_previewPage + 1;
+        ImGui::SetNextItemWidth(150.0f * s);
+        if (ImGui::SliderInt("##page", &pageNo, 1, pageCount, "第 %d 页")) g_previewPage = pageNo - 1;
+    }
+    ImGui::SameLine(0.0f, 6.0f * s);
+    if (ImGui::Button(">", ImVec2(36.0f * s, rowH)) && g_previewPage < pageCount - 1) ++g_previewPage;
+    ImGui::SameLine(0.0f, 12.0f * s);
+    ImGui::TextColored(MutedColor(), "共 %d 页", pageCount);
+
+    {
+        const char* status = outReady ? "OCR 产物" : "原文件";
+        const float tw = ImGui::CalcTextSize("● ").x + ImGui::CalcTextSize(status).x + 4.0f * s;
+        const float x = ImGui::GetWindowContentRegionMax().x - tw;
+        if (x > ImGui::GetCursorPosX() + 12.0f * s) {
+            ImGui::SameLine(x);
+            ImGui::TextColored(outReady ? ImVec4(0.30f, 0.68f, 0.42f, 1.0f) : MutedColor(), "● %s",
+                               status);
         }
-        ImGui::Text("识别行 %d（其中低于 %.2f 的 %d 行）", static_cast<int>(pl->lines.size()),
-                    g_reviewScore, lowCount);
-    } else if (!g_done) {
-        ImGui::TextDisabled("该页暂无识别结果（尚未识别）。");
     }
 
-    ImGui::BeginChild("preview_canvas", ImVec2(0, 0), true);
-    if (g_tex && g_texW > 0 && g_texH > 0) {
-        ImVec2 avail = ImGui::GetContentRegionAvail();
-        if (avail.x < 32.0f) avail.x = 32.0f;
-        if (avail.y < 32.0f) avail.y = 32.0f;
-        float scale =
-            std::min(avail.x / static_cast<float>(g_texW), avail.y / static_cast<float>(g_texH));
-        if (scale <= 0.0f) scale = 1.0f;
-        const ImVec2 size(g_texW * scale, g_texH * scale);
-        ImGui::Image(static_cast<ImTextureID>(g_tex), size);
-        if (pl && pl->width > 0 && pl->height > 0 && !pl->lines.empty()) {
+    // ---- 工具条：第二行预览参数（窄窗口自动换行，避免控件被裁掉）----
+    const float rowW = ImGui::GetContentRegionAvail().x;
+    const bool wideRow = rowW > 520.0f * s;
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextColored(MutedColor(), "预览");
+    ImGui::SameLine(0.0f, 8.0f * s);
+    ImGui::SetNextItemWidth(std::max(120.0f * s, std::min(200.0f * s, rowW * 0.36f)));
+    // 滑块 + 右侧数值：既有明显的把手可以拖，数字也不会被把手挡住
+    ImGui::SliderFloat("##previewdpi", &g_previewDpi, 72.0f, 200.0f, "", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SameLine(0.0f, 8.0f * s);
+    ImGui::TextColored(MutedColor(), "%.0f dpi", g_previewDpi);
+    if (wideRow) ImGui::SameLine(0.0f, 14.0f * s);
+    ImGui::Checkbox("显示识别框", &g_showBoxes);
+    if (wideRow) ImGui::SameLine(0.0f, 14.0f * s);
+    ImGui::Checkbox("只看低置信度", &g_onlyLowConf);
+    if (pl && !pl->lines.empty()) {
+        int low = 0;
+        for (const auto& ln : pl->lines) low += (ln.score < g_reviewScore) ? 1 : 0;
+        ImGui::SameLine(0.0f, 16.0f * s);
+        ImGui::TextColored(MutedColor(), "本页 %d 行，低分 %d",
+                           static_cast<int>(pl->lines.size()), low);
+    }
+
+    // ---- 页面图（页码 / DPI / 文件变化才重渲染）----
+    if (g_texPath != target || g_texPage != g_previewPage || std::fabs(g_texDpi - g_previewDpi) > 0.5f) {
+        std::vector<unsigned char> rgba;
+        int tw = 0, th = 0;
+        std::string rerr;
+        if (g_preview.Render(g_previewPage, g_previewDpi, &rgba, &tw, &th, &rerr)) {
+            UploadTexture(rgba, tw, th);
+            g_texPath = target;
+            g_texPage = g_previewPage;
+            g_texDpi = g_previewDpi;
+        } else {
+            g_texError = rerr;
+        }
+    }
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::ColorConvertU32ToFloat4(
+                                                g_darkTheme ? IM_COL32(8, 9, 12, 255)
+                                                            : IM_COL32(228, 232, 240, 255)));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16.0f * s, 16.0f * s));
+    ImGui::BeginChild("##canvas", ImVec2(0, 0),
+                      ImGuiChildFlags_Border | ImGuiChildFlags_AlwaysUseWindowPadding);
+    {
+        if (!g_texError.empty()) {
+            ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.42f, 1.0f), "渲染失败：%s", g_texError.c_str());
+        }
+        const ImVec2 avail = ImGui::GetContentRegionAvail();
+        if (g_tex && g_texW > 0 && g_texH > 0) {
+            float scale =
+                std::min(avail.x / static_cast<float>(g_texW), avail.y / static_cast<float>(g_texH));
+            if (scale <= 0.0f) scale = 1.0f;
+            const ImVec2 size(g_texW * scale, g_texH * scale);
+            const ImVec2 origin = ImGui::GetCursorScreenPos();
+            ImGui::SetCursorScreenPos(ImVec2(origin.x + (avail.x - size.x) * 0.5f,
+                                             origin.y + (avail.y - size.y) * 0.5f));
+            ImGui::Image(static_cast<ImTextureID>(g_tex), size);
+
             const ImVec2 p0 = ImGui::GetItemRectMin();
             ImDrawList* dl = ImGui::GetWindowDrawList();
-            const float bx = size.x / static_cast<float>(pl->width);
-            const float by = size.y / static_cast<float>(pl->height);
-            if (g_showBoxes) {
-                for (const auto& ln : pl->lines) {
-                    const bool low = ln.score < g_reviewScore;
-                    if (g_onlyLowConf && !low) continue;
-                    dl->AddRect(ImVec2(p0.x + ln.x0 * bx, p0.y + ln.y0 * by),
-                                ImVec2(p0.x + ln.x1 * bx, p0.y + ln.y1 * by),
-                                low ? IM_COL32(255, 90, 90, 230) : IM_COL32(70, 220, 130, 180),
-                                0.0f, 0, 1.0f);
+            dl->AddRect(ImVec2(p0.x - 1.0f, p0.y - 1.0f), ImVec2(p0.x + size.x + 1.0f, p0.y + size.y + 1.0f),
+                        ImGui::GetColorU32(ImGuiCol_Border), 3.0f * s);
+
+            if (pl && pl->width > 0 && pl->height > 0 && !pl->lines.empty()) {
+                const float bx = size.x / static_cast<float>(pl->width);
+                const float by = size.y / static_cast<float>(pl->height);
+                if (g_showBoxes) {
+                    for (const auto& ln : pl->lines) {
+                        const bool low = ln.score < g_reviewScore;
+                        if (g_onlyLowConf && !low) continue;
+                        const ImU32 col = low ? IM_COL32(255, 96, 92, 200) : IM_COL32(64, 208, 120, 180);
+                        dl->AddRect(ImVec2(p0.x + ln.x0 * bx, p0.y + ln.y0 * by),
+                                    ImVec2(p0.x + ln.x1 * bx, p0.y + ln.y1 * by), col, 2.0f * s, 0,
+                                    1.5f * s);
+                    }
                 }
-            }
-            const ImVec2 m = ImGui::GetIO().MousePos;
-            if (ImGui::IsItemHovered() && m.x >= p0.x && m.y >= p0.y && m.x <= p0.x + size.x &&
-                m.y <= p0.y + size.y) {
-                const float ix = (m.x - p0.x) / bx;
-                const float iy = (m.y - p0.y) / by;
-                for (const auto& ln : pl->lines) {
-                    if (ix >= ln.x0 && ix <= ln.x1 && iy >= ln.y0 && iy <= ln.y1) {
-                        ImGui::BeginTooltip();
-                        ImGui::Text("置信度 %.2f", ln.score);
-                        ImGui::TextUnformatted(ln.text.c_str());
-                        ImGui::EndTooltip();
-                        break;
+                const ImVec2 m = ImGui::GetIO().MousePos;
+                if (ImGui::IsItemHovered() && m.x >= p0.x && m.y >= p0.y && m.x <= p0.x + size.x &&
+                    m.y <= p0.y + size.y) {
+                    const float ix = (m.x - p0.x) / bx;
+                    const float iy = (m.y - p0.y) / by;
+                    for (const auto& ln : pl->lines) {
+                        if (ix >= ln.x0 && ix <= ln.x1 && iy >= ln.y0 && iy <= ln.y1) {
+                            ImGui::BeginTooltip();
+                            ImGui::TextColored(MutedColor(), "置信度 %.2f", ln.score);
+                            ImGui::PushTextWrapPos(420.0f * s);
+                            ImGui::TextUnformatted(ln.text.c_str());
+                            ImGui::PopTextWrapPos();
+                            ImGui::EndTooltip();
+                            break;
+                        }
                     }
                 }
             }
+        } else {
+            ImGui::TextUnformatted("渲染中……");
         }
-    } else {
-        ImGui::TextUnformatted("渲染中……");
     }
     ImGui::EndChild();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
 }
 #endif
+
 int RunGui() {
     g_modelDir = ExeDir() + "\\models";
     LoadSettings();
@@ -717,13 +1160,39 @@ int RunGui() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-    GLFWwindow* window = glfwCreateWindow(1100, 760, "PDF OCR", nullptr, nullptr);
+    // 窗口默认占工作区 92%（封顶 1600x1080），并居中
+    int mwx = 0, mwy = 0, mww = 1280, mwh = 800;
+    if (GLFWmonitor* mon = glfwGetPrimaryMonitor()) glfwGetMonitorWorkarea(mon, &mwx, &mwy, &mww, &mwh);
+    int winW = std::min(1600, static_cast<int>(mww * 0.92f));
+    int winH = std::min(1080, static_cast<int>(mwh * 0.92f));
+
+    if (winW < 900) winW = 900;
+    if (winH < 620) winH = 620;
+    GLFWwindow* window = glfwCreateWindow(winW, winH, "PDF OCR - 扫描 PDF 转可复制文字", nullptr, nullptr);
     if (!window) {
         glfwTerminate();
         return 1;
     }
+    glfwSetWindowPos(window, mwx + (mww - winW) / 2, mwy + (mwh - winH) / 2);
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
+
+    // 窗口 / 任务栏图标（资源里编进去的 .ico）
+    if (HICON ico = static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_APPICON),
+                                                 IMAGE_ICON, 0, 0, LR_DEFAULTSIZE | LR_SHARED))) {
+        HWND hwnd = glfwGetWin32Window(window);
+        SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(ico));
+        SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(ico));
+    }
+
+    // UI 缩放：帧缓冲和窗口同样大小（物理像素渲染）时，按显示器缩放放大界面
+    float csX = 1.0f, csY = 1.0f;
+    glfwGetWindowContentScale(window, &csX, &csY);
+    int ww0 = 0, wh0 = 0, fw0 = 0, fh0 = 0;
+    glfwGetWindowSize(window, &ww0, &wh0);
+    glfwGetFramebufferSize(window, &fw0, &fh0);
+    const float fbScale = (ww0 > 0) ? static_cast<float>(fw0) / static_cast<float>(ww0) : 1.0f;
+    g_uiScale = (fbScale > 1.01f) ? 1.0f : std::max(1.0f, csX);
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -734,46 +1203,107 @@ int RunGui() {
     glfwSetDropCallback(window, DropCallback);
     ImGui_ImplOpenGL3_Init("#version 330");
 
+#ifdef OCRGUI_SELFTEST
+    // 只用到几个 FBO 入口，用 wglGetProcAddress 现取，避免给主程序引入 GL loader
+    if (g_shotW > 256 && g_shotH > 256) LoadShotFboFuncs();
+#endif
+
+#ifdef OCRGUI_SELFTEST
+    // --shot 时用离屏 FBO 按指定分辨率渲染：远端桌面分辨率很小，直接开大窗口会被系统压回去
+    if (g_shotW > 256 && g_shotH > 256) {
+        glGenTextures(1, &g_shotTex);
+        glBindTexture(GL_TEXTURE_2D, g_shotTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, g_shotW, g_shotH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        p_glGenFramebuffers(1, &g_shotFbo);
+        p_glBindFramebuffer(GL_FRAMEBUFFER, g_shotFbo);
+        p_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_shotTex, 0);
+        if (p_glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) g_shotFbo = 0;
+        p_glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+#endif
+
+    // 字体：优先微软雅黑，缺字/缺失时退回黑体；正文、标题、品牌各一份
+    const char* fontPath = FileExistsUtf8("C:\\Windows\\Fonts\\msyh.ttc")
+                               ? "C:\\Windows\\Fonts\\msyh.ttc"
+                               : "C:\\Windows\\Fonts\\simhei.ttf";
+    // 常用简体字表里没有 "阈/渲" 之类，另外还要箭头、圆点、对勾等符号，统一补上
+    static ImVector<ImWchar> glyphRanges;
+    {
+        ImFontGlyphRangesBuilder builder;
+        builder.AddRanges(io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+        builder.AddText("→←↑↓●○◆◇✔✓✕✗×·±°≈≤≥…—–");
+        builder.AddText("阈渲噪伽");
+        builder.BuildRanges(&glyphRanges);
+    }
+    const ImWchar* ranges = glyphRanges.Data;
     ImFontConfig cfg;
-    cfg.OversampleH = 2;
-    io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\simhei.ttf", 18.0f, &cfg,
-                                 io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+    cfg.OversampleH = 3;
+    cfg.OversampleV = 1;
+    cfg.RasterizerMultiply = 1.05f;
+    ImFont* uiFont = io.Fonts->AddFontFromFileTTF(fontPath, 16.0f * g_uiScale, &cfg, ranges);
+    if (!uiFont) uiFont = io.Fonts->AddFontDefault();
+    io.FontDefault = uiFont;
+    g_fontTitle = io.Fonts->AddFontFromFileTTF(fontPath, 21.0f * g_uiScale, &cfg, ranges);
+    g_fontBrand = io.Fonts->AddFontFromFileTTF(fontPath, 17.0f * g_uiScale, &cfg, ranges);
 
 
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
         ImGui_ImplOpenGL3_NewFrame();
+#ifdef OCRGUI_SELFTEST
+        if (g_selfTest) SelfTestStep(window);
+#endif
         static int devFrames = 0;
         if (++devFrames % 60 == 0)        ImGui_ImplGlfw_NewFrame();
+#ifdef OCRGUI_SELFTEST
+        if (g_shotFbo) ImGui::GetIO().DisplaySize = ImVec2(static_cast<float>(g_shotW), static_cast<float>(g_shotH));
+#endif
         ImGui::NewFrame();
 
+        const float s = g_uiScale;
         const ImGuiViewport* vp = ImGui::GetMainViewport();
         ImGui::SetNextWindowPos(vp->Pos);
         ImGui::SetNextWindowSize(vp->Size);
-        ImGui::Begin("PDF OCR", nullptr,
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+        ImGui::Begin("##root", nullptr,
                      ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-                         ImGuiWindowFlags_NoBringToFrontOnFocus);
-        if (ImGui::BeginTabBar("main_tabs")) {
-            if (ImGui::BeginTabItem("识别")) {
-                DrawOcrTab();
-                ImGui::EndTabItem();
-            }
+                         ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar |
+                         ImGuiWindowFlags_NoScrollWithMouse);
+        ImGui::PopStyleVar(2);
+
+        const float rootW = ImGui::GetContentRegionAvail().x;
+        const float sideW = std::min(std::clamp(rootW * 0.30f, 340.0f * s, 520.0f * s), rootW * 0.55f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18.0f * s, 16.0f * s));
+        ImGui::BeginChild("##sidebar", ImVec2(sideW, 0), ImGuiChildFlags_AlwaysUseWindowPadding);
+        DrawSidebar();
+        ImGui::EndChild();
+        ImGui::PopStyleVar();
+
+        ImGui::SameLine(0.0f, 0.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18.0f * s, 16.0f * s));
+        ImGui::BeginChild("##stage", ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding);
 #ifdef OCRGUI_HAS_MUPDF
-            const ImGuiTabItemFlags previewFlags =
-                g_switchToPreview ? ImGuiTabItemFlags_SetSelected : 0;
-            g_switchToPreview = false;
-            if (ImGui::BeginTabItem("预览", nullptr, previewFlags)) {
-                DrawPreviewTab();
-                ImGui::EndTabItem();
-            }
+        DrawStage();
+#else
+        ImGui::TextUnformatted("此版本未包含 MuPDF，无法预览 PDF。");
 #endif
-            ImGui::EndTabBar();
-        }
+        ImGui::EndChild();
+        ImGui::PopStyleVar();
         ImGui::End();
 
         ImGui::Render();
         int w, h;
         glfwGetFramebufferSize(window, &w, &h);
+#ifdef OCRGUI_SELFTEST
+        if (g_shotFbo) {
+            w = g_shotW;
+            h = g_shotH;
+            p_glBindFramebuffer(GL_FRAMEBUFFER, g_shotFbo);
+        }
+#endif
         glViewport(0, 0, w, h);
         if (g_darkTheme) {
             glClearColor(0.10f, 0.10f, 0.12f, 1.0f);
@@ -782,6 +1312,10 @@ int RunGui() {
         }
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+#ifdef OCRGUI_SELFTEST
+        MaybeCaptureShot(w, h);
+        if (g_shotFbo) p_glBindFramebuffer(GL_FRAMEBUFFER, 0);
+#endif
         glfwSwapBuffers(window);
     }
 
@@ -789,7 +1323,11 @@ int RunGui() {
     if (g_worker.joinable()) {
         // 关闭窗口时等待后台结束，避免进程被强制结束留下半成品
         for (int i = 0; i < 600 && g_running; ++i) Sleep(100);
-        if (g_worker.joinable()) g_worker.detach();
+        if (g_running) {
+            g_worker.detach();
+        } else {
+            g_worker.join();
+        }
     }
 
     ImGui_ImplOpenGL3_Shutdown();
@@ -798,6 +1336,9 @@ int RunGui() {
     glfwDestroyWindow(window);
     SaveSettings();
     glfwTerminate();
+#ifdef OCRGUI_SELFTEST
+    if (g_selfTest && !g_selfTestOk) return 3;
+#endif
     return 0;
 }
 
@@ -806,6 +1347,21 @@ int RunGui() {
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     int argc = 0;
     LPWSTR* wargv = CommandLineToArgvW(GetCommandLineW(), &argc);
+#ifdef OCRGUI_SELFTEST
+    if (wargv && argc > 2 && WideToUtf8(wargv[1]) == "--shot") {
+        g_shotPath = WideToUtf8(wargv[2]);
+        g_shotFrame = 200;
+        if (argc > 3) g_shotW = _wtoi(wargv[3]);
+        if (argc > 4) g_shotH = _wtoi(wargv[4]);
+        LocalFree(wargv);
+        return RunGui();
+    }
+    g_selfTest = wargv && argc > 1 && WideToUtf8(wargv[1]) == "--selftest";
+    if (g_selfTest) {
+        LocalFree(wargv);
+        return RunGui();
+    }
+#endif
     if (wargv && argc > 1) {
         // 有参数 -> CLI 模式，需要把 stdout 接回父控制台
         std::vector<std::string> args;

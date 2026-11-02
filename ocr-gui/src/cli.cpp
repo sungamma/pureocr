@@ -1,4 +1,5 @@
 #include "cli.h"
+#include "util/utf8_io.h"
 
 #include "util/path_util.h"
 
@@ -334,7 +335,7 @@ int RunCli(int argc, char **argv) {
     }
     json += "  ]\n}\n";
     if (!outPath.empty()) {
-        FILE *fp = std::fopen(outPath.c_str(), "wb");
+        FILE *fp = util::OpenUtf8(outPath, L"wb");
         if (!fp) {
             std::fprintf(stderr, "无法写入 %s\n", outPath.c_str());
             return 1;

@@ -69,10 +69,17 @@ else()
   message(WARNING "未找到 ${MUPDF_DIR}/lib/libmupdf.lib，PDF 渲染/文字层功能不可用")
 endif()
 
+# 图标 / 版本信息（仅 MSVC：用 rc.exe 编进 exe）
+if (MSVC)
+  enable_language(RC)
+  list(APPEND OCR_SOURCES resources/app.rc)
+endif()
+
 add_executable(ocrgui WIN32 ${OCR_SOURCES})
 target_include_directories(ocrgui PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party
+  ${CMAKE_CURRENT_SOURCE_DIR}/resources
   ${ORT_DIR}/include
 )
 target_link_libraries(ocrgui PRIVATE

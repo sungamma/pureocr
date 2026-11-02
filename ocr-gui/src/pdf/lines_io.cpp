@@ -1,4 +1,5 @@
 #include "pdf/lines_io.h"
+#include "util/utf8_io.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -78,8 +79,8 @@ int CountLowScoreLines(const std::vector<OcrPageLines>& pages, float reviewScore
 
 bool WriteLinesCsv(const std::string& path, const std::vector<OcrPageLines>& pages, double dpi,
                    float reviewScore, std::string* err) {
-    FILE* f = nullptr;
-    if (fopen_s(&f, path.c_str(), "wb") != 0 || !f) {
+    FILE* f = util::OpenUtf8(path, L"wb");
+    if (!f) {
         if (err) *err = "无法写入 CSV: " + path;
         return false;
     }
@@ -135,8 +136,8 @@ void SplitCsvLine(const std::string& line, std::vector<std::string>* out) {
 
 bool LoadTextFixes(const std::string& path, std::vector<TextFix>* fixes, std::string* err) {
     if (fixes) fixes->clear();
-    FILE* f = nullptr;
-    if (fopen_s(&f, path.c_str(), "rb") != 0 || !f) {
+    FILE* f = util::OpenUtf8(path, L"rb");
+    if (!f) {
         if (err) *err = "无法打开复核 CSV: " + path;
         return false;
     }
@@ -180,14 +181,15 @@ LineCacheWriter::~LineCacheWriter() { Close(); }
 bool LineCacheWriter::Open(const std::string& path, double dpi, const std::string& tag,
                            std::string* err) {
     Close();
-    FILE* probe = nullptr;
+    FILE* probe = util::OpenUtf8(path, L"rb");
     bool empty = true;
-    if (fopen_s(&probe, path.c_str(), "rb") == 0 && probe) {
+    if (probe) {
         std::fseek(probe, 0, SEEK_END);
         empty = std::ftell(probe) == 0;
         std::fclose(probe);
     }
-    if (fopen_s(&f_, path.c_str(), "ab") != 0 || !f_) {
+    f_ = util::OpenUtf8(path, L"ab");
+    if (!f_) {
         if (err) *err = "无法写入缓存: " + path;
         return false;
     }
@@ -221,8 +223,8 @@ void LineCacheWriter::Close() {
 bool LoadLineCache(const std::string& path, double dpi, const std::string& tag,
                    std::vector<OcrPageLines>* pages) {
     if (pages) pages->clear();
-    FILE* f = nullptr;
-    if (fopen_s(&f, path.c_str(), "rb") != 0 || !f) return false;
+    FILE* f = util::OpenUtf8(path, L"rb");
+    if (!f) return false;
 
     std::vector<std::string> fields;
     std::string text;

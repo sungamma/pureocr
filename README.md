@@ -197,7 +197,25 @@ C++ 反而识别出 `GB/T 151—2026`、`浮头式`、坐标轴数字等真实�
 
 8 线程相对 4 线程已无收益，**建议 4 线程**（2~3 线程前台更流畅）。
 
-### 3. 打包
+### 3. 打包 / 发布
+
+一键编译 + 打包（推荐）：
+
+```powershell
+pwsh -NoProfile -File ocr-gui/tools/release.ps1                  # 配置 + 编译 Release + 打包 + SHA256
+pwsh -NoProfile -File ocr-gui/tools/release.ps1 -Clean           # 先清空构建目录再编
+pwsh -NoProfile -File ocr-gui/tools/release.ps1 -Version 1.0.0   # 产物 ocrgui-1.0.0.zip
+pwsh -NoProfile -File ocr-gui/tools/release.ps1 -SkipBuild       # 只重新打包已有构建
+```
+
+默认构建目录 `ocr-gui/build`（发布成功后自动删除，`-KeepBuild` 可保留），产物在 `ocr-gui/dist/`；
+脚本会自动找 CMake（PATH 里没有就用 VS 自带的）、检查 third_party 与 models，打包后写 `SHA256SUMS.txt`。
+
+> 若配置阶段报 `error C1090: PDB API 调用失败`，是 Dropbox / OneDrive 这类云同步的文件过滤驱动
+> 挡住了编译器的 PDB 写入（把整个仓库挪出同步目录最省事）。脚本会自动改到 `%TEMP%\ocrgui-build`
+> 重新配置，编译完照常删除临时目录，不用手工干预。
+
+只打包（已自行编译过时）：
 
 ```powershell
 pwsh -NoProfile -File ocr-gui/tools/package.ps1          # 生成 ocr-gui/dist/ocrgui-YYYYMMDD 目录 + zip
