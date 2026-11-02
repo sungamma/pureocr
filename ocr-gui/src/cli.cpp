@@ -73,7 +73,8 @@ std::string JsonEscape(const std::string &s) {
 
 int RunPdfCli(const std::string &pdfPath, const std::string &outPdf, const std::string &modelDir,
               const std::string &fontPath, double dpi, int threads, float minScore,
-              const std::string &pageSpec, bool maskOriginal) {
+              const std::string &pageSpec, bool maskOriginal, const std::string &csvPath,
+              float reviewScore) {
 #ifdef OCRGUI_HAS_MUPDF
     namespace fs = std::filesystem;
     if (fontPath.empty()) {
@@ -98,6 +99,8 @@ int RunPdfCli(const std::string &pdfPath, const std::string &outPdf, const std::
     opt.dpi = dpi;
     opt.threads = threads > 0 ? threads : 4;
     opt.minScore = minScore;
+    opt.reviewScore = reviewScore;
+    opt.csvPath = csvPath;
     opt.maskOriginal = maskOriginal;
     if (!pageSpec.empty() && !pdf::ParsePageSpec(pageSpec, &opt.pages)) {
         std::fprintf(stderr, "页码参数无效: %s\n", pageSpec.c_str());
@@ -136,11 +139,13 @@ int RunPdfCli(const std::string &pdfPath, const std::string &outPdf, const std::
                 stats.lineCount, stats.maskedFonts, stats.maskedCodes);
     std::printf("用时：%.1f 秒（其中屏蔽原文字层 %.1f 秒，保存 %.1f 秒）\n", stats.seconds,
                 stats.maskSeconds, stats.saveSeconds);
+    std::printf("待复核：%d 行（置信度 < %.2f）\n", stats.reviewLines, opt.reviewScore);
+    if (!csvPath.empty()) std::printf("复核 CSV：%s\n", csvPath.c_str());
     (void)t0;
     return 0;
 #else
     (void)pdfPath; (void)outPdf; (void)modelDir; (void)fontPath; (void)dpi; (void)threads;
-    (void)minScore; (void)pageSpec; (void)maskOriginal;
+    (void)minScore; (void)pageSpec; (void)maskOriginal; (void)csvPath; (void)reviewScore;
     std::fprintf(stderr, "本版本未编译 MuPDF 支持，无法处理 PDF\n");
     return 1;
 #endif
@@ -149,8 +154,10 @@ int RunPdfCli(const std::string &pdfPath, const std::string &outPdf, const std::
 }  // namespace
 
 int RunCli(int argc, char **argv) {
-    std::string imagePath, pdfPath, outPdf, modelDir, outPath, dumpDir, fontPath, pageSpec, logPath;
+    std::string imagePath, pdfPath, outPdf, modelDir, outPath, dumpDir, fontPath, pageSpec, logPath,
+        csvPath;
     float minScore = 0.5f;
+    float reviewScore = 0.75f;
     int threads = 0;
     double dpi = 300.0;
     bool maskOriginal = true;
@@ -181,12 +188,17 @@ int RunCli(int argc, char **argv) {
             outPath = argv[++i];
         } else if (a == "--min-score" && i + 1 < argc) {
             minScore = std::stof(argv[++i]);
+        } else if (a == "--review-score" && i + 1 < argc) {
+            reviewScore = std::stof(argv[++i]);
+        } else if (a == "--csv" && i + 1 < argc) {
+            csvPath = argv[++i];
         } else if (a == "--threads" && i + 1 < argc) {
             threads = std::stoi(argv[++i]);
         } else if (a == "--help" || a == "-h") {
             std::printf("用法:\n");
             std::printf("  ocrgui --pdf <输入.pdf> [--out-pdf <输出.pdf>] [--dpi 300] [--threads 4]\n");
             std::printf("         [--pages 1-10,15] [--font <ttf>] [--no-mask] [--min-score 0.5]\n");
+            std::printf("         [--csv <复核.csv>] [--review-score 0.75]\n");
             std::printf("         [--model-dir <模型目录>] [--log <日志文件>]\n");
             std::printf("  ocrgui --image <图片> [--out <json>] [--dump-crops <目录>] [--threads N]\n");
             return 0;
@@ -207,7 +219,7 @@ int RunCli(int argc, char **argv) {
 
     if (!pdfPath.empty()) {
         return RunPdfCli(pdfPath, outPdf, modelDir, fontPath, dpi, threads, minScore, pageSpec,
-                         maskOriginal);
+                         maskOriginal, csvPath, reviewScore);
     }
 
     if (imagePath.empty()) {

@@ -22,6 +22,7 @@
 #include "util/path_util.h"
 #include "cli.h"
 #ifdef OCRGUI_HAS_MUPDF
+#include "pdf/lines_io.h"
 #include "pdf/ocr_pages.h"
 #include "pdf/preview.h"
 #endif
@@ -43,6 +44,8 @@ std::atomic<int> g_totalPages{0};
 std::string g_result;   // 完成后的结果摘要
 std::thread g_worker;
 float g_minScore = 0.5f;
+float g_reviewScore = 0.75f;
+double g_lastDpi = 300.0;
 int g_threads = 4;
 int g_dpi = 300;
 bool g_switchToPreview = false;
@@ -132,6 +135,49 @@ void SavePdfDialog() {
     if (GetSaveFileNameW(&ofn)) g_outPath = WideToUtf8(file);
 }
 
+std::string ReviewCsvPath() {
+    std::string base = g_outPath.empty() ? DefaultOutputPath(g_pdfPath) : g_outPath;
+    const size_t dot = base.find_last_of('.');
+    const size_t slash = base.find_last_of("\\/");
+    if (dot != std::string::npos && (slash == std::string::npos || dot > slash)) {
+        base = base.substr(0, dot);
+    }
+    return base + "_复核.csv";
+}
+
+void ExportReviewCsv() {
+    if (g_pageLines.empty()) {
+        PushLog("没有可导出的识别结果（先跑一次识别）");
+        return;
+    }
+    std::string path = ReviewCsvPath();
+    wchar_t file[1024] = L"";
+    const std::wstring w = Utf8ToWide(path);
+    wcsncpy_s(file, w.c_str(), _TRUNCATE);
+    OPENFILENAMEW ofn = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = GetActiveWindow();
+    ofn.lpstrFilter = L"CSV 文件 (*.csv)\0*.csv\0\0";
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = 1024;
+    ofn.lpstrDefExt = L"csv";
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+    if (!GetSaveFileNameW(&ofn)) return;
+    path = WideToUtf8(file);
+    std::string err;
+    if (!pdf::WriteLinesCsv(path, g_pageLines, g_lastDpi, g_reviewScore, &err)) {
+        PushLog("导出 CSV 失败：" + err);
+        return;
+    }
+    int total = 0;
+    for (const auto& pg : g_pageLines) total += static_cast<int>(pg.lines.size());
+    char buf[320];
+    std::snprintf(buf, sizeof(buf), "已导出复核 CSV：%d 页 / %d 行（低于 %.2f 标为待复核）-> %s",
+                  static_cast<int>(g_pageLines.size()), total,
+                  static_cast<double>(g_reviewScore), path.c_str());
+    PushLog(buf);
+}
+
 void OpenOutputFolder() {
     if (g_outPath.empty()) return;
     const std::string dir = util::ParentDir(g_outPath);
@@ -168,6 +214,7 @@ void StartOcr() {
     const int threads = g_threads;
     const int dpi = g_dpi;
     const float minScore = g_minScore;
+    g_lastDpi = static_cast<double>(dpi);
 
     g_worker = std::thread([=]() {
         pdf::OcrRunOptions opt;
@@ -253,6 +300,11 @@ void DrawOcrTab() {
     ImGui::SliderInt("线程数", &g_threads, 1, 16);
     ImGui::SliderInt("DPI", &g_dpi, 150, 400);
     ImGui::SliderFloat("置信度阈值", &g_minScore, 0.1f, 0.9f, "%.2f");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(160);
+    ImGui::SliderFloat("复核阈值", &g_reviewScore, 0.5f, 0.95f, "%.2f");
+    ImGui::SameLine();
+    ImGui::TextDisabled("低于此分数标为待复核");
     ImGui::Separator();
 
     const bool canStart = !g_pdfPath.empty() && !g_running && !g_modelDir.empty();
@@ -282,6 +334,8 @@ void DrawOcrTab() {
             if (ImGui::SmallButton("打开输出目录")) OpenOutputFolder();
             ImGui::SameLine();
             if (ImGui::SmallButton("查看识别框")) g_switchToPreview = true;
+            ImGui::SameLine();
+            if (ImGui::SmallButton("导出复核 CSV")) ExportReviewCsv();
         }
     }
 
@@ -385,10 +439,10 @@ void DrawPreviewTab() {
     if (pl && !pl->lines.empty()) {
         int lowCount = 0;
         for (const auto& ln : pl->lines) {
-            if (ln.score < g_minScore) ++lowCount;
+            if (ln.score < g_reviewScore) ++lowCount;
         }
         ImGui::Text("识别行 %d（其中低于 %.2f 的 %d 行）", static_cast<int>(pl->lines.size()),
-                    g_minScore, lowCount);
+                    g_reviewScore, lowCount);
     } else if (!g_done) {
         ImGui::TextDisabled("该页暂无识别结果（尚未识别）。");
     }
@@ -410,7 +464,7 @@ void DrawPreviewTab() {
             const float by = size.y / static_cast<float>(pl->height);
             if (g_showBoxes) {
                 for (const auto& ln : pl->lines) {
-                    const bool low = ln.score < g_minScore;
+                    const bool low = ln.score < g_reviewScore;
                     if (g_onlyLowConf && !low) continue;
                     dl->AddRect(ImVec2(p0.x + ln.x0 * bx, p0.y + ln.y0 * by),
                                 ImVec2(p0.x + ln.x1 * bx, p0.y + ln.y1 * by),

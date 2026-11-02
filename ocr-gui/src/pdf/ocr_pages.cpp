@@ -14,6 +14,7 @@
 
 #include "ocr/engine.h"
 #include "pdf/doc.h"
+#include "pdf/lines_io.h"
 #include "pdf/textlayer.h"
 
 namespace pdf {
@@ -230,7 +231,21 @@ bool RunPdfOcr(const OcrRunOptions& opt, const OcrProgress& progress, OcrRunStat
         return false;
     }
 
+    if (!opt.csvPath.empty()) {
+        if (!stats) {
+            if (err) *err = "导出 CSV 需要 stats 输出";  // 内部调用约定
+            return false;
+        }
+        const float review = opt.reviewScore > 0.0f ? opt.reviewScore : opt.minScore;
+        if (!WriteLinesCsv(opt.csvPath, stats->pageLines, opt.dpi, review, &message)) {
+            if (err) *err = message;
+            return false;
+        }
+    }
+
     if (stats) {
+        stats->reviewLines =
+            CountLowScoreLines(stats->pageLines, opt.reviewScore > 0.0f ? opt.reviewScore : opt.minScore);
         stats->pageCount = donePages;
         stats->lineCount = linesTotal;
         stats->maskedFonts = layer.MaskedFonts();
