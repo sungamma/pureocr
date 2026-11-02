@@ -69,32 +69,6 @@ std::string JsonEscape(const std::string &s) {
     return o;
 }
 
-/// 解析页码规格：如 "1-10,15,20-25"，返回 0 基页号
-bool ParsePageSpec(const std::string &spec, std::vector<int> *out) {
-    out->clear();
-    size_t i = 0;
-    while (i < spec.size()) {
-        while (i < spec.size() && (spec[i] == ',' || spec[i] == ' ')) ++i;
-        if (i >= spec.size()) break;
-        size_t start = i;
-        while (i < spec.size() && spec[i] != ',') ++i;
-        std::string token = spec.substr(start, i - start);
-        const size_t dash = token.find('-');
-        try {
-            if (dash == std::string::npos) {
-                out->push_back(std::stoi(token) - 1);
-            } else {
-                const int lo = std::stoi(token.substr(0, dash));
-                const int hi = std::stoi(token.substr(dash + 1));
-                for (int p = lo; p <= hi; ++p) out->push_back(p - 1);
-            }
-        } catch (...) {
-            return false;
-        }
-    }
-    return true;
-}
-
 int RunPdfCli(const std::string &pdfPath, const std::string &outPdf, const std::string &modelDir,
               const std::string &fontPath, double dpi, int threads, float minScore,
               const std::string &pageSpec, bool maskOriginal) {
@@ -123,7 +97,7 @@ int RunPdfCli(const std::string &pdfPath, const std::string &outPdf, const std::
     opt.threads = threads > 0 ? threads : 4;
     opt.minScore = minScore;
     opt.maskOriginal = maskOriginal;
-    if (!pageSpec.empty() && !ParsePageSpec(pageSpec, &opt.pages)) {
+    if (!pageSpec.empty() && !pdf::ParsePageSpec(pageSpec, &opt.pages)) {
         std::fprintf(stderr, "页码参数无效: %s\n", pageSpec.c_str());
         return 2;
     }

@@ -34,6 +34,31 @@ struct PageResult {
 
 }  // namespace
 
+bool ParsePageSpec(const std::string& spec, std::vector<int>* pages) {
+    pages->clear();
+    size_t i = 0;
+    while (i < spec.size()) {
+        while (i < spec.size() && (spec[i] == ',' || spec[i] == ' ')) ++i;
+        if (i >= spec.size()) break;
+        const size_t start = i;
+        while (i < spec.size() && spec[i] != ',') ++i;
+        const std::string token = spec.substr(start, i - start);
+        const size_t dash = token.find('-');
+        try {
+            if (dash == std::string::npos) {
+                pages->push_back(std::stoi(token) - 1);
+            } else {
+                const int lo = std::stoi(token.substr(0, dash));
+                const int hi = std::stoi(token.substr(dash + 1));
+                for (int p = lo; p <= hi; ++p) pages->push_back(p - 1);
+            }
+        } catch (...) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool RunPdfOcr(const OcrRunOptions& opt, const OcrProgress& progress, OcrRunStats* stats,
                std::string* err) {
     const auto t0 = std::chrono::steady_clock::now();

@@ -30,6 +30,9 @@ struct OcrRunStats {
 /// 进度回调：done/total 页数，pageIndex 为刚写入文字层的页，lines 为该页行数
 using OcrProgress = std::function<void(int done, int total, int pageIndex, int lines)>;
 
+/// 解析页码规格："1-10,15,20-25" -> 0 基页号列表；空串表示全部
+bool ParsePageSpec(const std::string& spec, std::vector<int>* pages);
+
 /// 渲染 PDF 每页 -> OCR -> 写隐形文字层 -> 保存
 bool RunPdfOcr(const OcrRunOptions& opt, const OcrProgress& progress, OcrRunStats* stats,
                std::string* err);

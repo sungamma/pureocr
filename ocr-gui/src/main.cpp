@@ -26,6 +26,7 @@ namespace {
 std::string g_pdfPath;
 std::string g_outPath;
 std::string g_modelDir;
+std::string g_pageSpec;
 
 // OCR 运行状态（后台线程写，UI 线程读）
 std::mutex g_mutex;
@@ -91,6 +92,32 @@ void OpenPdfDialog() {
     }
 }
 
+void SavePdfDialog() {
+    namespace fs = std::filesystem;
+    wchar_t file[1024] = L"";
+    if (!g_outPath.empty()) {
+        const std::wstring w = Utf8ToWide(g_outPath);
+        wcsncpy_s(file, w.c_str(), _TRUNCATE);
+    }
+    OPENFILENAMEW ofn = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = GetActiveWindow();
+    ofn.lpstrFilter = L"PDF 文件 (*.pdf)\0*.pdf\0\0";
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = 1024;
+    ofn.lpstrDefExt = L"pdf";
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+    if (GetSaveFileNameW(&ofn)) g_outPath = WideToUtf8(file);
+}
+
+void OpenOutputFolder() {
+    namespace fs = std::filesystem;
+    if (g_outPath.empty()) return;
+    const std::string dir = fs::u8path(g_outPath).parent_path().u8string();
+    if (dir.empty()) return;
+    ShellExecuteW(nullptr, L"open", Utf8ToWide(dir).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
 void StartOcr() {
 #ifdef OCRGUI_HAS_MUPDF
     if (g_running) return;
@@ -105,6 +132,13 @@ void StartOcr() {
     }
     const std::string pdf = g_pdfPath;
     const std::string out = g_outPath.empty() ? DefaultOutputPath(pdf) : g_outPath;
+    std::vector<int> pages;
+    if (!g_pageSpec.empty() && !pdf::ParsePageSpec(g_pageSpec, &pages)) {
+        PushLog("页范围格式无效：" + g_pageSpec + "（例：1-10,15）");
+        g_running = false;
+        return;
+    }
+    const std::string pageSpecNote = g_pageSpec.empty() ? std::string("全部页") : g_pageSpec;
     const std::string modelDir = g_modelDir;
     const int threads = g_threads;
     const int dpi = g_dpi;
@@ -120,10 +154,11 @@ void StartOcr() {
         opt.threads = threads;
         opt.minScore = minScore;
         opt.maskOriginal = true;
+        opt.pages = pages;
 
         pdf::OcrRunStats stats;
         std::string err;
-        PushLog("开始识别：" + pdf);
+        PushLog("开始识别：" + pdf + "（" + pageSpecNote + "）");
         PushLog("输出：" + out);
         const bool ok = pdf::RunPdfOcr(
             opt,
@@ -194,10 +229,19 @@ int RunGui() {
         ImGui::SameLine();
         ImGui::TextWrapped("%s", g_pdfPath.empty() ? "（未选择文件）" : g_pdfPath.c_str());
         ImGui::TextWrapped("输出：%s", g_outPath.empty() ? "（自动）" : g_outPath.c_str());
+        ImGui::SameLine();
+        if (!g_running) {
+            if (ImGui::SmallButton("另存为...")) SavePdfDialog();
+        }
         ImGui::Separator();
 
         ImGui::SetNextItemWidth(360);
         if (ImGui::InputText("模型目录", modelBuf, sizeof(modelBuf))) g_modelDir = modelBuf;
+        ImGui::SetNextItemWidth(360);
+        static char pageBuf[128] = "";
+        if (ImGui::InputText("页范围", pageBuf, sizeof(pageBuf))) g_pageSpec = pageBuf;
+        ImGui::SameLine();
+        ImGui::TextDisabled("留空=全部，例：1-10,15");
         ImGui::SliderInt("线程数", &g_threads, 1, 16);
         ImGui::SliderInt("DPI", &g_dpi, 150, 400);
         ImGui::SliderFloat("置信度阈值", &g_minScore, 0.1f, 0.9f, "%.2f");
@@ -216,6 +260,10 @@ int RunGui() {
         } else if (!g_result.empty()) {
             ImGui::SameLine();
             ImGui::TextUnformatted(g_result.c_str());
+            if (!g_outPath.empty()) {
+                ImGui::SameLine();
+                if (ImGui::SmallButton("打开输出目录")) OpenOutputFolder();
+            }
         }
 
         ImGui::Separator();
