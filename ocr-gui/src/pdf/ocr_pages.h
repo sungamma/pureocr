@@ -22,6 +22,7 @@ struct OcrRunOptions {
     std::string detModel;      // det 模型文件名/绝对路径；空 = 自动探测（v4 优先）
     std::string recModel;      // rec 模型：同上
     std::string clsModel;      // 方向分类模型：同上
+    float mergeGapRatio = 0.8f;  // 同行碎片合并阈值（× 行高）；0 = 关闭
     bool maskOriginal = true;  // 屏蔽原文字层，复制文字只输出 OCR 结果
     std::vector<int> pages;    // 0 基页号；空表示全部
 };

@@ -50,11 +50,22 @@ int g_threads = 4;
 int g_dpi = 300;
 bool g_switchToPreview = false;
 bool g_resume = false;  // 断点续跑
-int g_presetIdx = 0;  // 模型预置（索引见 ocr::ModelPresetList）
+int g_presetIdx = -1;  // -1 = 未初始化，默认选「自动探测」
+bool g_mergeRow = true;  // 合并同一行的碎片
+
+int DefaultPresetIndex() {
+    int n = 0;
+    const ocr::ModelPreset *list = ocr::ModelPresetList(&n);
+    for (int i = 0; i < n; ++i) {
+        if (std::string(list[i].id) == "auto") return i;
+    }
+    return 0;
+}  // 模型预置（索引见 ocr::ModelPresetList）
 
 const ocr::ModelPreset *CurrentPreset() {
     int n = 0;
     const ocr::ModelPreset *list = ocr::ModelPresetList(&n);
+    if (g_presetIdx < 0) g_presetIdx = DefaultPresetIndex();
     if (g_presetIdx < 0 || g_presetIdx >= n) return list;
     return &list[g_presetIdx];
 }
@@ -240,6 +251,7 @@ void StartOcr() {
         opt.detModel = mp->det;
         opt.recModel = mp->rec;
         opt.clsModel = mp->cls;
+        opt.mergeGapRatio = g_mergeRow ? 0.8f : 0.0f;
         opt.pages = pages;
 
         pdf::OcrRunStats stats;
@@ -312,6 +324,7 @@ void DrawOcrTab() {
     }
     ImGui::SetNextItemWidth(360);
     if (ImGui::InputText("模型目录", modelBuf, sizeof(modelBuf))) g_modelDir = modelBuf;
+    if (g_presetIdx < 0) g_presetIdx = DefaultPresetIndex();
     {
         int pc = 0;
         const ocr::ModelPreset *presets = ocr::ModelPresetList(&pc);
@@ -322,6 +335,8 @@ void DrawOcrTab() {
         }
         ImGui::SetNextItemWidth(240);
         ImGui::Combo("模型", &g_presetIdx, labels.data(), pc);
+        ImGui::SameLine();
+        ImGui::Checkbox("合并同行碎片", &g_mergeRow);
         ImGui::SameLine();
         ImGui::TextDisabled("（换模型会自动让断点缓存失效）");
     }

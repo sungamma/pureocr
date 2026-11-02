@@ -142,7 +142,12 @@ bool RunPdfOcr(const OcrRunOptions& opt, const OcrProgress& progress, OcrRunStat
         tagOpt.modelDir = ToWide(opt.modelDir);
         tagOpt.detModel = opt.detModel;
         tagOpt.recModel = opt.recModel;
-        cacheTag = ocr::ModelTag(tagOpt);  // 换模型后缓存自动失效
+        cacheTag = ocr::ModelTag(tagOpt);
+        {
+            char mbuf[32];
+            std::snprintf(mbuf, sizeof(mbuf), "|m=%.2f", static_cast<double>(opt.mergeGapRatio));
+            cacheTag += mbuf;  // 合并策略变了，缓存也要作废
+        }  // 换模型后缓存自动失效
     }
 
     TextLayer layer;
@@ -225,6 +230,7 @@ bool RunPdfOcr(const OcrRunOptions& opt, const OcrProgress& progress, OcrRunStat
         eopt.detModel = opt.detModel;
         eopt.recModel = opt.recModel;
         eopt.clsModel = opt.clsModel;
+        eopt.mergeGapRatio = opt.mergeGapRatio;
         eopt.minScore = opt.minScore;
         // 每个 worker 各自一个 ORT session：限制单 session 的线程数，
         // 避免「线程数 × ORT 默认线程」把 CPU 过度订阅（实测 8 线程反而更慢）

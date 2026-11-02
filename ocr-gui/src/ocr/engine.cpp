@@ -141,6 +141,80 @@ void OrderQuad(float q[4][2]) {
     for (int k = 0; k < 4; ++k) { q[k][0] = out[k][0]; q[k][1] = out[k][1]; }
 }
 
+/// 合并同一行的相邻碎片：垂直重叠 ≥ 0.6 倍行高、水平间隙 ≤ gapRatio 倍行高即合并；
+/// 间隙大于 spaceRatio 倍行高时补一个空格（如 `B.1` + `概述` → `B.1 概述`）。
+/// 纯数字（只有数字、小数点、千分位逗号），这类片段在图表/表格里常是两个独立的标签
+bool IsPlainNumber(const std::string &s) {
+    bool hasDigit = false;
+    for (char c : s) {
+        if (c >= '0' && c <= '9') {
+            hasDigit = true;
+        } else if (c != '.' && c != ',' && c != '-') {
+            return false;
+        }
+    }
+    return hasDigit;
+}
+
+void MergeSameRow(std::vector<TextLine> *lines, float gapRatio, float spaceRatio) {
+    if (!lines || lines->size() < 2 || gapRatio <= 0.0f) return;
+    std::vector<TextLine> &L = *lines;
+    std::vector<size_t> order(L.size());
+    for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+    std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+        const float ca = (L[a].y0 + L[a].y1) * 0.5f;
+        const float cb = (L[b].y0 + L[b].y1) * 0.5f;
+        const float ha = std::max(1.0f, L[a].y1 - L[a].y0);
+        if (std::fabs(ca - cb) > 0.5f * ha) return ca < cb;
+        return L[a].x0 < L[b].x0;
+    });
+    std::vector<char> used(L.size(), 0);
+    std::vector<TextLine> out;
+    out.reserve(L.size());
+    for (size_t oi = 0; oi < order.size(); ++oi) {
+        const size_t i = order[oi];
+        if (used[i]) continue;
+        used[i] = 1;
+        TextLine acc = L[i];
+        for (;;) {
+            size_t best = static_cast<size_t>(-1);
+            float bestGap = 0.0f;
+            const float ha = std::max(1.0f, acc.y1 - acc.y0);
+            for (size_t oj = oi + 1; oj < order.size(); ++oj) {
+                const size_t j = order[oj];
+                if (used[j]) continue;
+                const TextLine &b = L[j];
+                const float h = std::min(ha, std::max(1.0f, b.y1 - b.y0));
+                const float ov = std::min(acc.y1, b.y1) - std::max(acc.y0, b.y0);
+                if (ov < 0.6f * h) continue;
+                const float gap = b.x0 - acc.x1;
+                if (gap < -0.5f * h || gap > gapRatio * h) continue;
+                // 两个纯数字（图表轴标签、表格数字单元格）绝不合并，避免 `1.05`+`1.02`
+                if (IsPlainNumber(acc.text) && IsPlainNumber(b.text)) continue;
+                if (best == static_cast<size_t>(-1) || b.x0 < L[best].x0) {
+                    best = j;
+                    bestGap = gap;
+                }
+            }
+            if (best == static_cast<size_t>(-1)) break;
+            const TextLine &b = L[best];
+            const float h = std::min(ha, std::max(1.0f, b.y1 - b.y0));
+            const float wa = std::max(1.0f, acc.x1 - acc.x0);
+            const float wb = std::max(1.0f, b.x1 - b.x0);
+            if (bestGap > spaceRatio * h && !acc.text.empty()) acc.text += ' ';
+            acc.text += b.text;
+            acc.score = (acc.score * wa + b.score * wb) / (wa + wb);
+            acc.x0 = std::min(acc.x0, b.x0);
+            acc.y0 = std::min(acc.y0, b.y0);
+            acc.x1 = std::max(acc.x1, b.x1);
+            acc.y1 = std::max(acc.y1, b.y1);
+            used[best] = 1;
+        }
+        out.push_back(acc);
+    }
+    L.swap(out);
+}
+
 bool FileExistsW(const std::wstring &p) {
     return GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES;
 }
@@ -213,7 +287,8 @@ bool LoadKeysFile(const std::wstring &path, std::vector<std::string> *chars) {
     return !chars->empty();
 }
 
-bool ResolveKeys(const std::wstring &dir, const std::string &spec, std::wstring *out) {
+bool ResolveKeys(const std::wstring &dir, const std::string &spec,
+                 const std::string &recName, std::wstring *out) {
     if (!spec.empty()) {
         const std::wstring w = Utf8ToWide(spec);
         const bool abs = (w.size() > 1 && w[1] == L':') ||
@@ -223,8 +298,13 @@ bool ResolveKeys(const std::wstring &dir, const std::string &spec, std::wstring 
         *out = p;
         return true;
     }
-    const wchar_t *cands[] = {L"ppocr_keys_v1.txt", L"ppocr_keys.txt", L"keys.txt"};
-    for (const wchar_t *c : cands) {
+    // v5 的字典和 v3/v4 完全不同，按 rec 模型名优先选对应字典
+    const bool isV5 = recName.find("v5") != std::string::npos;
+    const wchar_t *v5Cands[] = {L"ppocrv5_dict.txt", L"ppocr_keys_v1.txt"};
+    const wchar_t *v34Cands[] = {L"ppocr_keys_v1.txt", L"ppocrv5_dict.txt"};
+    const wchar_t **cands = isV5 ? v5Cands : v34Cands;
+    for (size_t ci = 0; ci < 2; ++ci) {
+        const wchar_t *c = cands[ci];
         const std::wstring p = dir + L"/" + c;
         if (FileExistsW(p)) {
             *out = p;
@@ -672,7 +752,9 @@ Engine::~Engine() = default;
 
 const ModelPreset *ModelPresetList(int *count) {
     static const ModelPreset kPresets[] = {
-        {"v4", "v4 移动版（推荐）", "ch_PP-OCRv4_det_infer.onnx", "ch_PP-OCRv4_rec_infer.onnx",
+        {"v5", "v5 移动版（最新）", "ch_PP-OCRv5_det_infer.onnx", "ch_PP-OCRv5_rec_infer.onnx",
+         "ch_ppocr_mobile_v2.0_cls_infer.onnx"},
+        {"v4", "v4 移动版", "ch_PP-OCRv4_det_infer.onnx", "ch_PP-OCRv4_rec_infer.onnx",
          "ch_ppocr_mobile_v2.0_cls_infer.onnx"},
         {"v3", "v3 移动版", "ch_PP-OCRv3_det_infer.onnx", "ch_PP-OCRv3_rec_infer.onnx",
          "ch_ppocr_mobile_v2.0_cls_infer.onnx"},
@@ -688,13 +770,15 @@ std::string ModelTag(const EngineOptions &opt) {
     std::wstring det, rec;
     std::string ignored;
     if (!ResolveModel(opt.modelDir, opt.detModel,
-                      {L"ch_PP-OCRv4_det_infer.onnx", L"ch_PP-OCRv3_det_infer.onnx"}, "det", &det,
-                      &ignored)) {
+                      {L"ch_PP-OCRv5_det_infer.onnx", L"ch_PP-OCRv4_det_infer.onnx",
+                       L"ch_PP-OCRv3_det_infer.onnx"},
+                      "det", &det, &ignored)) {
         det.clear();
     }
     if (!ResolveModel(opt.modelDir, opt.recModel,
-                      {L"ch_PP-OCRv4_rec_infer.onnx", L"ch_PP-OCRv3_rec_infer.onnx"}, "rec", &rec,
-                      &ignored)) {
+                      {L"ch_PP-OCRv5_rec_infer.onnx", L"ch_PP-OCRv4_rec_infer.onnx",
+                       L"ch_PP-OCRv3_rec_infer.onnx"},
+                      "rec", &rec, &ignored)) {
         rec.clear();
     }
     return BaseNameUtf8(det) + "+" + BaseNameUtf8(rec);
@@ -706,13 +790,15 @@ bool Engine::Init(const EngineOptions &opt, std::string *err) {
     // 自动探测顺序：v4 优先、其次 v3；把模型文件丢进 modelDir 即可切换
     std::wstring detPath, recPath, clsPath;
     if (!ResolveModel(dir, opt.detModel,
-                      {L"ch_PP-OCRv4_det_infer.onnx", L"ch_PP-OCRv3_det_infer.onnx"}, "det", &detPath,
-                      err)) {
+                      {L"ch_PP-OCRv5_det_infer.onnx", L"ch_PP-OCRv4_det_infer.onnx",
+                       L"ch_PP-OCRv3_det_infer.onnx"},
+                      "det", &detPath, err)) {
         return false;
     }
     if (!ResolveModel(dir, opt.recModel,
-                      {L"ch_PP-OCRv4_rec_infer.onnx", L"ch_PP-OCRv3_rec_infer.onnx"}, "rec", &recPath,
-                      err)) {
+                      {L"ch_PP-OCRv5_rec_infer.onnx", L"ch_PP-OCRv4_rec_infer.onnx",
+                       L"ch_PP-OCRv3_rec_infer.onnx"},
+                      "rec", &recPath, err)) {
         return false;
     }
     if (!d_->Load(detPath, opt.threads, d_->det, err)) return false;
@@ -750,7 +836,9 @@ bool Engine::Init(const EngineOptions &opt, std::string *err) {
     // 回退：rec 模型没带 metadata 字典时读字典文件（Paddle 约定：blank + 字典 + 末尾空格）
     if (d_->chars.empty()) {
         std::wstring keysPath;
-        if (ResolveKeys(dir, opt.keysFile, &keysPath)) LoadKeysFile(keysPath, &d_->chars);
+        if (ResolveKeys(dir, opt.keysFile, BaseNameUtf8(recPath), &keysPath)) {
+            LoadKeysFile(keysPath, &d_->chars);
+        }
     }
     if (d_->chars.empty()) {
         if (err) *err = "识别字典为空（model metadata 中未找到 character）";
@@ -811,6 +899,8 @@ std::vector<TextLine> Engine::Recognize(const Image &img, std::string *err) {
         tl.score = r.second;
         lines.push_back(tl);
     }
+    // 同一行碎片合并（mergeGapRatio = 0 表示关闭）
+    MergeSameRow(&lines, d_->opt.mergeGapRatio, 0.35f);
     return lines;
 }
 

@@ -76,7 +76,7 @@ int RunPdfCli(const std::string &pdfPath, const std::string &outPdf, const std::
               const std::string &pageSpec, bool maskOriginal, const std::string &csvPath,
               float reviewScore,
               bool resume, const std::string &cachePath, const std::string &detModel,
-              const std::string &recModel, const std::string &clsModel) {
+              const std::string &recModel, const std::string &clsModel, float mergeGap) {
 #ifdef OCRGUI_HAS_MUPDF
     namespace fs = std::filesystem;
     if (fontPath.empty()) {
@@ -109,6 +109,7 @@ int RunPdfCli(const std::string &pdfPath, const std::string &outPdf, const std::
     opt.detModel = detModel;
     opt.recModel = recModel;
     opt.clsModel = clsModel;
+    opt.mergeGapRatio = mergeGap;
     if (!pageSpec.empty() && !pdf::ParsePageSpec(pageSpec, &opt.pages)) {
         std::fprintf(stderr, "页码参数无效: %s\n", pageSpec.c_str());
         return 2;
@@ -159,6 +160,7 @@ int RunPdfCli(const std::string &pdfPath, const std::string &outPdf, const std::
     (void)pdfPath; (void)outPdf; (void)modelDir; (void)fontPath; (void)dpi; (void)threads;
     (void)minScore; (void)pageSpec; (void)maskOriginal; (void)csvPath; (void)reviewScore;
     (void)resume; (void)cachePath; (void)detModel; (void)recModel; (void)clsModel;
+    (void)mergeGap;
     std::fprintf(stderr, "本版本未编译 MuPDF 支持，无法处理 PDF\n");
     return 1;
 #endif
@@ -186,6 +188,7 @@ int RunCli(int argc, char **argv) {
     bool resume = false;
     std::string cachePath;
     std::string preset, detModel, recModel, clsModel;
+    float mergeGap = 0.8f;
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -229,6 +232,8 @@ int RunCli(int argc, char **argv) {
             recModel = argv[++i];
         } else if (a == "--cls-model" && i + 1 < argc) {
             clsModel = argv[++i];
+        } else if (a == "--merge-gap" && i + 1 < argc) {
+            mergeGap = std::stof(argv[++i]);
         } else if (a == "--threads" && i + 1 < argc) {
             threads = std::stoi(argv[++i]);
         } else if (a == "--help" || a == "-h") {
@@ -240,6 +245,7 @@ int RunCli(int argc, char **argv) {
             std::printf("         [--resume] [--cache <缓存.tsv>]  断点续跑：已完成页跳过\n");
             std::printf("         [--preset auto|v3|v4|v4s] [--det-model <文件名|绝对路径>]\n");
             std::printf("         [--rec-model <文件名|绝对路径>] [--cls-model <文件名>]\n");
+            std::printf("         [--merge-gap 0.8]  同行碎片合并阈值（×行高，0=关闭）\n");
             std::printf("  ocrgui --image <图片> [--out <json>] [--dump-crops <目录>] [--threads N]\n");
             return 0;
         } else {
@@ -270,7 +276,7 @@ int RunCli(int argc, char **argv) {
     if (!pdfPath.empty()) {
         return RunPdfCli(pdfPath, outPdf, modelDir, fontPath, dpi, threads, minScore, pageSpec,
                          maskOriginal, csvPath, reviewScore, resume, cachePath, detModel,
-                         recModel, clsModel);
+                         recModel, clsModel, mergeGap);
     }
 
     if (imagePath.empty()) {

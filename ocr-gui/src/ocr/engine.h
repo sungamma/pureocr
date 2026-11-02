@@ -28,6 +28,9 @@ struct EngineOptions {
     bool useDilation = true;
     bool useAngleCls = true;
     float minScore = 0.5f;      // 识别结果过滤阈值
+    /// 同一行相邻碎片合并阈值（倍数 × 行高）；0 = 不合并。
+    /// v4/v5 的 det 常把一句话切成几段，用这个把它们拼回一行
+    float mergeGapRatio = 0.8f;
     int threads = 0;            // 0 = 交给 ORT 默认
     std::string dumpCropsDir;   // 非空时把每张裁剪图存成 PNG（调试用）
 };
