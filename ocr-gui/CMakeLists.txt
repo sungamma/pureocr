@@ -62,6 +62,7 @@ if (EXISTS "${MUPDF_DIR}/lib/libmupdf.lib")
     src/pdf/doc.cpp
     src/pdf/textlayer.cpp
     src/pdf/ocr_pages.cpp
+    src/pdf/preview.cpp
   )
 else()
   message(WARNING "未找到 ${MUPDF_DIR}/lib/libmupdf.lib，PDF 渲染/文字层功能不可用")

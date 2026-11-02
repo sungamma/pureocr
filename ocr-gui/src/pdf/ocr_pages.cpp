@@ -29,6 +29,8 @@ std::wstring ToWide(const std::string& s) {
 
 struct PageResult {
     std::vector<ocr::TextLine> lines;
+    int width = 0;
+    int height = 0;
     bool done = false;
 };
 
@@ -169,6 +171,8 @@ bool RunPdfOcr(const OcrRunOptions& opt, const OcrProgress& progress, OcrRunStat
             {
                 std::lock_guard<std::mutex> lk(mtx);
                 results[i].lines = std::move(lines);
+                results[i].width = img.w;
+                results[i].height = img.h;
                 results[i].done = true;
             }
             cv.notify_all();
@@ -195,6 +199,14 @@ bool RunPdfOcr(const OcrRunOptions& opt, const OcrProgress& progress, OcrRunStat
             if (err) *err = "写入第 " + std::to_string(pages[i] + 1) + " 页文字层失败: " + message;
             ok = false;
             break;
+        }
+        if (stats) {
+            OcrPageLines pl;
+            pl.page = pages[i];
+            pl.width = results[i].width;
+            pl.height = results[i].height;
+            pl.lines = results[i].lines;
+            stats->pageLines.push_back(std::move(pl));
         }
         ++donePages;
         linesTotal += static_cast<int>(results[i].lines.size());

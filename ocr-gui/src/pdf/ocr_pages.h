@@ -3,6 +3,8 @@
 #include <string>
 #include <vector>
 
+#include "ocr/engine.h"
+
 namespace pdf {
 
 struct OcrRunOptions {
@@ -17,6 +19,14 @@ struct OcrRunOptions {
     std::vector<int> pages;    // 0 基页号；空表示全部
 };
 
+/// 一页的识别结果（像素坐标，宽高为渲染图像尺寸，用于归一化后画框）
+struct OcrPageLines {
+    int page = -1;
+    int width = 0;
+    int height = 0;
+    std::vector<ocr::TextLine> lines;
+};
+
 struct OcrRunStats {
     int pageCount = 0;
     int lineCount = 0;
@@ -25,6 +35,8 @@ struct OcrRunStats {
     double seconds = 0.0;
     double maskSeconds = 0.0;   // 屏蔽原文字层耗时
     double saveSeconds = 0.0;   // 子集化 + 保存耗时
+    /// 逐页识别框（GUI 预览叠加用）；只在成功返回时填充
+    std::vector<OcrPageLines> pageLines;
 };
 
 /// 进度回调：done/total 页数，pageIndex 为刚写入文字层的页，lines 为该页行数

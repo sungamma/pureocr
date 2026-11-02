@@ -8,7 +8,10 @@
 #include <shellapi.h>
 #include <GLFW/glfw3.h>
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <mutex>
@@ -16,10 +19,11 @@
 #include <thread>
 #include <vector>
 
-#include "cli.h"
 #include "util/path_util.h"
+#include "cli.h"
 #ifdef OCRGUI_HAS_MUPDF
 #include "pdf/ocr_pages.h"
+#include "pdf/preview.h"
 #endif
 
 namespace {
@@ -41,6 +45,24 @@ std::thread g_worker;
 float g_minScore = 0.5f;
 int g_threads = 4;
 int g_dpi = 300;
+bool g_switchToPreview = false;
+std::chrono::steady_clock::time_point g_startTime;
+
+#ifdef OCRGUI_HAS_MUPDF
+pdf::PagePreview g_preview;
+int g_previewPage = 0;
+float g_previewDpi = 120.0f;
+bool g_showBoxes = true;
+bool g_onlyLowConf = false;
+std::vector<pdf::OcrPageLines> g_pageLines;
+std::string g_texPath;
+std::string g_texError;
+int g_texPage = -1;
+float g_texDpi = 0.0f;
+unsigned g_tex = 0;
+int g_texW = 0;
+int g_texH = 0;
+#endif
 
 std::string WideToUtf8(const wchar_t* s) {
     if (!s) return std::string();
@@ -94,7 +116,6 @@ void OpenPdfDialog() {
 }
 
 void SavePdfDialog() {
-    namespace fs = std::filesystem;
     wchar_t file[1024] = L"";
     if (!g_outPath.empty()) {
         const std::wstring w = Utf8ToWide(g_outPath);
@@ -125,6 +146,10 @@ void StartOcr() {
     g_done = false;
     g_donePages = 0;
     g_totalPages = 0;
+    g_startTime = std::chrono::steady_clock::now();
+#ifdef OCRGUI_HAS_MUPDF
+    g_pageLines.clear();
+#endif
     {
         std::lock_guard<std::mutex> lk(g_mutex);
         g_log.clear();
@@ -170,6 +195,12 @@ void StartOcr() {
                 PushLog(buf);
             },
             &stats, &err);
+#ifdef OCRGUI_HAS_MUPDF
+        if (ok) {
+            std::lock_guard<std::mutex> lk(g_mutex);
+            g_pageLines = std::move(stats.pageLines);
+        }
+#endif
         if (!ok) {
             PushLog("失败：" + err);
             g_result = "失败：" + err;
@@ -186,9 +217,231 @@ void StartOcr() {
 #endif
 }
 
+std::string FmtDur(double sec) {
+    if (sec < 0) sec = 0;
+    const int total = static_cast<int>(sec + 0.5);
+    if (total < 60) return std::to_string(total) + " 秒";
+    const int m = total / 60;
+    const int rs = total % 60;
+    if (m < 60) return std::to_string(m) + " 分 " + std::to_string(rs) + " 秒";
+    return std::to_string(m / 60) + " 时 " + std::to_string(m % 60) + " 分";
+}
+
+/// 「识别」页
+void DrawOcrTab() {
+    if (ImGui::Button("打开 PDF...", ImVec2(140, 0)) && !g_running) OpenPdfDialog();
+    ImGui::SameLine();
+    ImGui::TextWrapped("%s", g_pdfPath.empty() ? "（未选择文件）" : g_pdfPath.c_str());
+    ImGui::TextWrapped("输出：%s", g_outPath.empty() ? "（自动）" : g_outPath.c_str());
+    ImGui::SameLine();
+    if (!g_running) {
+        if (ImGui::SmallButton("另存为...")) SavePdfDialog();
+    }
+    ImGui::Separator();
+
+    static char modelBuf[512] = "";
+    if (modelBuf[0] == '\0' && !g_modelDir.empty()) {
+        std::snprintf(modelBuf, sizeof(modelBuf), "%s", g_modelDir.c_str());
+    }
+    ImGui::SetNextItemWidth(360);
+    if (ImGui::InputText("模型目录", modelBuf, sizeof(modelBuf))) g_modelDir = modelBuf;
+    ImGui::SetNextItemWidth(360);
+    static char pageBuf[128] = "";
+    if (ImGui::InputText("页范围", pageBuf, sizeof(pageBuf))) g_pageSpec = pageBuf;
+    ImGui::SameLine();
+    ImGui::TextDisabled("留空=全部，例：1-10,15");
+    ImGui::SliderInt("线程数", &g_threads, 1, 16);
+    ImGui::SliderInt("DPI", &g_dpi, 150, 400);
+    ImGui::SliderFloat("置信度阈值", &g_minScore, 0.1f, 0.9f, "%.2f");
+    ImGui::Separator();
+
+    const bool canStart = !g_pdfPath.empty() && !g_running && !g_modelDir.empty();
+    if (!canStart) ImGui::BeginDisabled();
+    if (ImGui::Button("开始识别", ImVec2(140, 0))) StartOcr();
+    if (!canStart) ImGui::EndDisabled();
+
+    const int total = g_totalPages.load();
+    const int done = g_donePages.load();
+    if (g_running && total > 0) {
+        const double elapsed = std::chrono::duration<double>(
+                                   std::chrono::steady_clock::now() - g_startTime)
+                                   .count();
+        const double eta =
+            done > 0 ? elapsed / done * static_cast<double>(total - done) : 0.0;
+        char overlay[160];
+        std::snprintf(overlay, sizeof(overlay), "%d/%d 页  已用 %s  剩余约 %s", done, total,
+                      FmtDur(elapsed).c_str(), done > 0 ? FmtDur(eta).c_str() : "计算中");
+        ImGui::SameLine();
+        ImGui::ProgressBar(static_cast<float>(done) / static_cast<float>(total), ImVec2(-1, 0),
+                           overlay);
+    } else if (!g_result.empty()) {
+        ImGui::SameLine();
+        ImGui::TextUnformatted(g_result.c_str());
+        if (!g_outPath.empty()) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton("打开输出目录")) OpenOutputFolder();
+            ImGui::SameLine();
+            if (ImGui::SmallButton("查看识别框")) g_switchToPreview = true;
+        }
+    }
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("日志");
+    ImGui::BeginChild("log", ImVec2(0, 0), true);
+    {
+        std::lock_guard<std::mutex> lk(g_mutex);
+        for (const auto& l : g_log) ImGui::TextUnformatted(l.c_str());
+        if (g_running) ImGui::TextUnformatted("……");
+    }
+    ImGui::EndChild();
+}
+
+#ifdef OCRGUI_HAS_MUPDF
+void UploadTexture(const std::vector<unsigned char>& rgba, int w, int h) {
+    if (!g_tex) glGenTextures(1, &g_tex);
+    glBindTexture(GL_TEXTURE_2D, g_tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+    g_texW = w;
+    g_texH = h;
+    g_texError.clear();
+}
+
+/// 「预览」页：渲染页面并叠加 OCR 识别框，用来检查文字层有没有错位
+void DrawPreviewTab() {
+    if (g_pdfPath.empty()) {
+        ImGui::TextUnformatted("先在「识别」页打开一个 PDF。");
+        return;
+    }
+    const bool outReady = g_done && !g_outPath.empty() &&
+                          std::filesystem::exists(std::filesystem::u8path(g_outPath));
+    const std::string target = outReady ? g_outPath : g_pdfPath;
+
+    std::string openErr;
+    if (!g_preview.Open(target, &openErr)) {
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "打开失败：%s", openErr.c_str());
+        return;
+    }
+    const int pageCount = g_preview.PageCount();
+    if (pageCount <= 0) {
+        ImGui::TextUnformatted("文档没有页面。");
+        return;
+    }
+    if (g_previewPage > pageCount - 1) g_previewPage = pageCount - 1;
+    if (g_previewPage < 0) g_previewPage = 0;
+
+    if (outReady) {
+        ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.6f, 1.0f), "预览 OCR 产物：%s", target.c_str());
+    } else {
+        ImGui::TextWrapped("预览原文件：%s", target.c_str());
+    }
+
+    int pageNo = g_previewPage + 1;
+    ImGui::SetNextItemWidth(170);
+    if (ImGui::SliderInt("页码", &pageNo, 1, pageCount)) g_previewPage = pageNo - 1;
+    ImGui::SameLine();
+    if (ImGui::SmallButton("上一页")) {
+        if (g_previewPage > 0) --g_previewPage;
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("下一页")) {
+        if (g_previewPage < pageCount - 1) ++g_previewPage;
+    }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(150);
+    ImGui::SliderFloat("预览 DPI", &g_previewDpi, 72.0f, 200.0f, "%.0f");
+    ImGui::Checkbox("显示识别框", &g_showBoxes);
+    ImGui::SameLine();
+    ImGui::Checkbox("只看低置信度", &g_onlyLowConf);
+
+    // 页号 / DPI / 文件变化时才重新渲染
+    if (g_texPath != target || g_texPage != g_previewPage ||
+        std::fabs(g_texDpi - g_previewDpi) > 0.5f) {
+        std::vector<unsigned char> rgba;
+        int w = 0, h = 0;
+        std::string rerr;
+        if (g_preview.Render(g_previewPage, g_previewDpi, &rgba, &w, &h, &rerr)) {
+            UploadTexture(rgba, w, h);
+            g_texPath = target;
+            g_texPage = g_previewPage;
+            g_texDpi = g_previewDpi;
+        } else {
+            g_texError = rerr;
+        }
+    }
+    if (!g_texError.empty()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "渲染失败：%s", g_texError.c_str());
+    }
+
+    const pdf::OcrPageLines* pl = nullptr;
+    for (const auto& pg : g_pageLines) {
+        if (pg.page == g_previewPage) {
+            pl = &pg;
+            break;
+        }
+    }
+    if (pl && !pl->lines.empty()) {
+        int lowCount = 0;
+        for (const auto& ln : pl->lines) {
+            if (ln.score < g_minScore) ++lowCount;
+        }
+        ImGui::Text("识别行 %d（其中低于 %.2f 的 %d 行）", static_cast<int>(pl->lines.size()),
+                    g_minScore, lowCount);
+    } else if (!g_done) {
+        ImGui::TextDisabled("该页暂无识别结果（尚未识别）。");
+    }
+
+    ImGui::BeginChild("preview_canvas", ImVec2(0, 0), true);
+    if (g_tex && g_texW > 0 && g_texH > 0) {
+        ImVec2 avail = ImGui::GetContentRegionAvail();
+        if (avail.x < 32.0f) avail.x = 32.0f;
+        if (avail.y < 32.0f) avail.y = 32.0f;
+        float scale =
+            std::min(avail.x / static_cast<float>(g_texW), avail.y / static_cast<float>(g_texH));
+        if (scale <= 0.0f) scale = 1.0f;
+        const ImVec2 size(g_texW * scale, g_texH * scale);
+        ImGui::Image(static_cast<ImTextureID>(g_tex), size);
+        if (pl && pl->width > 0 && pl->height > 0 && !pl->lines.empty()) {
+            const ImVec2 p0 = ImGui::GetItemRectMin();
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            const float bx = size.x / static_cast<float>(pl->width);
+            const float by = size.y / static_cast<float>(pl->height);
+            if (g_showBoxes) {
+                for (const auto& ln : pl->lines) {
+                    const bool low = ln.score < g_minScore;
+                    if (g_onlyLowConf && !low) continue;
+                    dl->AddRect(ImVec2(p0.x + ln.x0 * bx, p0.y + ln.y0 * by),
+                                ImVec2(p0.x + ln.x1 * bx, p0.y + ln.y1 * by),
+                                low ? IM_COL32(255, 90, 90, 230) : IM_COL32(70, 220, 130, 180),
+                                0.0f, 0, 1.0f);
+                }
+            }
+            const ImVec2 m = ImGui::GetIO().MousePos;
+            if (ImGui::IsItemHovered() && m.x >= p0.x && m.y >= p0.y && m.x <= p0.x + size.x &&
+                m.y <= p0.y + size.y) {
+                const float ix = (m.x - p0.x) / bx;
+                const float iy = (m.y - p0.y) / by;
+                for (const auto& ln : pl->lines) {
+                    if (ix >= ln.x0 && ix <= ln.x1 && iy >= ln.y0 && iy <= ln.y1) {
+                        ImGui::BeginTooltip();
+                        ImGui::Text("置信度 %.2f", ln.score);
+                        ImGui::TextUnformatted(ln.text.c_str());
+                        ImGui::EndTooltip();
+                        break;
+                    }
+                }
+            }
+        }
+    } else {
+        ImGui::TextUnformatted("渲染中……");
+    }
+    ImGui::EndChild();
+}
+#endif
 int RunGui() {
     g_modelDir = ExeDir() + "\\models";
-
     if (!glfwInit()) return 1;
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
@@ -215,66 +468,36 @@ int RunGui() {
     io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\simhei.ttf", 18.0f, &cfg,
                                  io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
 
-    char modelBuf[512];
-    std::snprintf(modelBuf, sizeof(modelBuf), "%s", g_modelDir.c_str());
 
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
         ImGui_ImplOpenGL3_NewFrame();
-        ImGui_ImplGlfw_NewFrame();
+        static int devFrames = 0;
+        if (++devFrames % 60 == 0)        ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
-        ImGui::Begin("PDF OCR");
-        if (ImGui::Button("打开 PDF...", ImVec2(140, 0)) && !g_running) OpenPdfDialog();
-        ImGui::SameLine();
-        ImGui::TextWrapped("%s", g_pdfPath.empty() ? "（未选择文件）" : g_pdfPath.c_str());
-        ImGui::TextWrapped("输出：%s", g_outPath.empty() ? "（自动）" : g_outPath.c_str());
-        ImGui::SameLine();
-        if (!g_running) {
-            if (ImGui::SmallButton("另存为...")) SavePdfDialog();
-        }
-        ImGui::Separator();
-
-        ImGui::SetNextItemWidth(360);
-        if (ImGui::InputText("模型目录", modelBuf, sizeof(modelBuf))) g_modelDir = modelBuf;
-        ImGui::SetNextItemWidth(360);
-        static char pageBuf[128] = "";
-        if (ImGui::InputText("页范围", pageBuf, sizeof(pageBuf))) g_pageSpec = pageBuf;
-        ImGui::SameLine();
-        ImGui::TextDisabled("留空=全部，例：1-10,15");
-        ImGui::SliderInt("线程数", &g_threads, 1, 16);
-        ImGui::SliderInt("DPI", &g_dpi, 150, 400);
-        ImGui::SliderFloat("置信度阈值", &g_minScore, 0.1f, 0.9f, "%.2f");
-        ImGui::Separator();
-
-        const bool canStart = !g_pdfPath.empty() && !g_running && !g_modelDir.empty();
-        if (!canStart) ImGui::BeginDisabled();
-        if (ImGui::Button("开始识别", ImVec2(140, 0))) StartOcr();
-        if (!canStart) ImGui::EndDisabled();
-
-        const int total = g_totalPages.load();
-        const int done = g_donePages.load();
-        if (g_running && total > 0) {
-            ImGui::SameLine();
-            ImGui::ProgressBar(static_cast<float>(done) / static_cast<float>(total), ImVec2(-1, 0));
-        } else if (!g_result.empty()) {
-            ImGui::SameLine();
-            ImGui::TextUnformatted(g_result.c_str());
-            if (!g_outPath.empty()) {
-                ImGui::SameLine();
-                if (ImGui::SmallButton("打开输出目录")) OpenOutputFolder();
+        const ImGuiViewport* vp = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(vp->Pos);
+        ImGui::SetNextWindowSize(vp->Size);
+        ImGui::Begin("PDF OCR", nullptr,
+                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                         ImGuiWindowFlags_NoBringToFrontOnFocus);
+        if (ImGui::BeginTabBar("main_tabs")) {
+            if (ImGui::BeginTabItem("识别")) {
+                DrawOcrTab();
+                ImGui::EndTabItem();
             }
+#ifdef OCRGUI_HAS_MUPDF
+            const ImGuiTabItemFlags previewFlags =
+                g_switchToPreview ? ImGuiTabItemFlags_SetSelected : 0;
+            g_switchToPreview = false;
+            if (ImGui::BeginTabItem("预览", nullptr, previewFlags)) {
+                DrawPreviewTab();
+                ImGui::EndTabItem();
+            }
+#endif
+            ImGui::EndTabBar();
         }
-
-        ImGui::Separator();
-        ImGui::TextUnformatted("日志");
-        ImGui::BeginChild("log", ImVec2(0, 0), true);
-        {
-            std::lock_guard<std::mutex> lk(g_mutex);
-            for (const auto& l : g_log) ImGui::TextUnformatted(l.c_str());
-            if (g_running) ImGui::TextUnformatted("……");
-        }
-        ImGui::EndChild();
         ImGui::End();
 
         ImGui::Render();

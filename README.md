@@ -174,3 +174,44 @@ python ocr-gui/tools/verify_pdf.py "原始.pdf" "C++产物.pdf" --reference "Pyt
 第 6、8 页相似度偏低（0.31 / 0.45）是评分口径问题：那两页是插图页，Python 版识别出大量「....」点线，
 C++ 反而识别出 `GB/T 151—2026`、`浮头式`、坐标轴数字等真实内容。
 
+
+## M2.1 完成（2026-11-02）：预览校验、剩余时间、打包
+
+### 1. GUI 拆成两个页签
+
+- 「识别」：打开 PDF / 页范围 / 另存为 / 线程数 / DPI / 置信度；进度条带**已用时间 + 预计剩余**。
+- 「预览」：渲染 PDF 某页并叠加 OCR 识别框（绿=正常，红=低于阈值），鼠标悬停显示该行文字与置信度。
+  识别完成后预览的是**产物 PDF**，可直接肉眼确认文字层有没有错位；未识别时预览原文件。
+
+预览按需渲染（页码 / DPI / 文件变化才重画），默认 120 dpi；识别完成点「查看识别框」直达该页签。
+
+### 2. per-worker ORT 线程（默认 4 线程）
+
+每个 worker 各自一个 ORT session。原先 `threads = 0` 让 ORT 用满物理核，N 个 worker 就是 N 倍超订。
+改成 `hardware_concurrency / threadCount`（1..8 clamp）。实测 10 页样本（16 核，无 GPU）：
+
+| 线程数 | 改前 | 改后 |
+|---|---|---|
+| 4 | 37.8 s | 34.8 s |
+| 8 | 42.0 s | 35.1 s |
+
+8 线程相对 4 线程已无收益，**建议 4 线程**（2~3 线程前台更流畅）。
+
+### 3. 打包
+
+```powershell
+pwsh -NoProfile -File ocr-gui/tools/package.ps1          # 生成 ocr-gui/dist/ocrgui-YYYYMMDD 目录 + zip
+pwsh -NoProfile -File ocr-gui/tools/package.ps1 -NoZip   # 只出目录
+```
+
+产物目录：`ocrgui.exe`、`onnxruntime.dll`、`models\*.onnx`、`使用说明.txt`、`run-cli.ps1`。
+双击 exe 进 GUI；`run-cli.ps1 -Pdf <文件> [-Pages 1-10] [-Threads 4] [-NoMask]` 走命令行。
+
+### 4. 踩坑：中文路径让 GUI 闪退（已修）
+
+`std::filesystem::path::replace_filename(std::string)` 会按**系统 ACP(GBK)** 把窄字符串转 wchar，
+而这里传入的是 UTF-8 的 `原名_可复制文字.pdf`；转换失败抛 `filesystem_error`，未捕获 ->
+`std::terminate` -> 0xc0000409 闪退（GUI 打开中文名 PDF 必崩，CLI 只在没给 `--out-pdf` 时崩）。
+
+修法：新增 `src/util/path_util.h`，后缀拼接**纯 UTF-8 字符串**完成，不经过 path 的窄字符转换，CLI/GUI 共用。
+顺带修了 `WideToUtf8` / `Utf8ToWide` 写 NUL 到 `data()[size()]` 的 1 字节越界。
