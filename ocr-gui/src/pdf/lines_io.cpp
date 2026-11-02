@@ -101,6 +101,78 @@ bool WriteLinesCsv(const std::string& path, const std::vector<OcrPageLines>& pag
     return true;
 }
 
+// ---------------- 复核 CSV 回灌 ----------------
+
+/// 解析一行 CSV（支持双引号包裹与 "" 转义）
+void SplitCsvLine(const std::string& line, std::vector<std::string>* out) {
+    out->clear();
+    std::string cur;
+    bool quoted = false;
+    for (size_t i = 0; i < line.size(); ++i) {
+        const char c = line[i];
+        if (quoted) {
+            if (c == '"') {
+                if (i + 1 < line.size() && line[i + 1] == '"') {
+                    cur += '"';
+                    ++i;
+                } else {
+                    quoted = false;
+                }
+            } else {
+                cur += c;
+            }
+        } else if (c == '"') {
+            quoted = true;
+        } else if (c == ',') {
+            out->push_back(cur);
+            cur.clear();
+        } else if (c != '\r') {
+            cur += c;
+        }
+    }
+    out->push_back(cur);
+}
+
+bool LoadTextFixes(const std::string& path, std::vector<TextFix>* fixes, std::string* err) {
+    if (fixes) fixes->clear();
+    FILE* f = nullptr;
+    if (fopen_s(&f, path.c_str(), "rb") != 0 || !f) {
+        if (err) *err = "无法打开复核 CSV: " + path;
+        return false;
+    }
+    std::string all;
+    char buf[8192];
+    size_t rd = 0;
+    while ((rd = std::fread(buf, 1, sizeof(buf), f)) > 0) all.append(buf, rd);
+    std::fclose(f);
+    if (all.size() >= 3 && static_cast<unsigned char>(all[0]) == 0xEF &&
+        static_cast<unsigned char>(all[1]) == 0xBB && static_cast<unsigned char>(all[2]) == 0xBF) {
+        all.erase(0, 3);
+    }
+    std::vector<std::string> fields;
+    size_t start = 0;
+    while (start <= all.size()) {
+        const size_t nl = all.find('\n', start);
+        const std::string line =
+            all.substr(start, nl == std::string::npos ? std::string::npos : nl - start);
+        if (!line.empty()) {
+            SplitCsvLine(line, &fields);
+            // 第一列不是正整数就是表头，跳过
+            const int page = std::atoi(fields[0].c_str());
+            if (page > 0 && fields.size() >= 3) {
+                TextFix fx;
+                fx.page = page;
+                fx.line = std::atoi(fields[1].c_str());
+                fx.text = fields.back();  // 文字列固定在最后
+                if (fx.line > 0) fixes->push_back(std::move(fx));
+            }
+        }
+        if (nl == std::string::npos) break;
+        start = nl + 1;
+    }
+    return true;
+}
+
 // ---------------- 页级缓存 ----------------
 
 LineCacheWriter::~LineCacheWriter() { Close(); }

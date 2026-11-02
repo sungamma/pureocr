@@ -12,8 +12,11 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -51,7 +54,9 @@ int g_dpi = 300;
 bool g_switchToPreview = false;
 bool g_resume = false;  // 断点续跑
 int g_presetIdx = -1;  // -1 = 未初始化，默认选「自动探测」
-bool g_mergeRow = true;  // 合并同一行的碎片
+bool g_mergeRow = true;   // 合并同一行的碎片
+bool g_darkTheme = true;  // 深色主题
+std::string g_fixCsv;     // 复核 CSV（回灌用）
 
 int DefaultPresetIndex() {
     int n = 0;
@@ -121,6 +126,150 @@ void PushLog(const std::string& line) {
 
 std::string DefaultOutputPath(const std::string& input) {
     return util::InsertBeforeExtension(input, "_可复制文字");
+}
+
+bool FileExistsUtf8(const std::string& path) {
+    return GetFileAttributesW(Utf8ToWide(path).c_str()) != INVALID_FILE_ATTRIBUTES;
+}
+
+/// %LOCALAPPDATA%\ocrgui\settings.ini
+std::string SettingsPath() {
+    std::string dir;
+    char* buf = nullptr;
+    size_t len = 0;
+    if (_dupenv_s(&buf, &len, "LOCALAPPDATA") == 0 && buf) {
+        dir = buf;
+        free(buf);
+    }
+    if (dir.empty()) dir = ExeDir();
+    CreateDirectoryW(Utf8ToWide(dir + "\\ocrgui").c_str(), nullptr);
+    return dir + "\\ocrgui\\settings.ini";
+}
+
+void LoadSettings() {
+    FILE* f = nullptr;
+    const std::string path = SettingsPath();
+    if (fopen_s(&f, path.c_str(), "rb") != 0 || !f) return;
+    std::string all;
+    char buf[4096];
+    size_t rd = 0;
+    while ((rd = std::fread(buf, 1, sizeof(buf), f)) > 0) all.append(buf, rd);
+    std::fclose(f);
+    if (all.size() >= 3 && static_cast<unsigned char>(all[0]) == 0xEF) all.erase(0, 3);
+    std::map<std::string, std::string> kv;
+    size_t start = 0;
+    while (start <= all.size()) {
+        const size_t nl = all.find('\n', start);
+        std::string line = all.substr(start, nl == std::string::npos ? std::string::npos : nl - start);
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+        const size_t eq = line.find('=');
+        if (eq != std::string::npos) {
+            std::string k = line.substr(0, eq);
+            while (!k.empty() && k.back() == ' ') k.pop_back();
+            kv[k] = line.substr(eq + 1);
+        }
+        if (nl == std::string::npos) break;
+        start = nl + 1;
+    }
+    auto str = [&](const char* k) {
+        auto it = kv.find(k);
+        return it == kv.end() ? std::string() : it->second;
+    };
+    auto num = [&](const char* k) { return std::atof(str(k).c_str()); };
+
+    const std::string in = str("input");
+    if (!in.empty() && FileExistsUtf8(in)) {
+        g_pdfPath = in;
+        const std::string out = str("output");
+        g_outPath = (!out.empty() && FileExistsUtf8(out)) ? out : DefaultOutputPath(in);
+    }
+    const std::string md = str("model_dir");
+    if (!md.empty() && FileExistsUtf8(md)) g_modelDir = md;
+    if (num("dpi") > 0) g_dpi = static_cast<int>(num("dpi"));
+    if (num("threads") > 0) g_threads = static_cast<int>(num("threads"));
+    if (num("min_score") > 0) g_minScore = static_cast<float>(num("min_score"));
+    if (num("review_score") > 0) g_reviewScore = static_cast<float>(num("review_score"));
+    if (kv.count("merge_row")) g_mergeRow = str("merge_row") != "0";
+    if (kv.count("dark")) g_darkTheme = str("dark") != "0";
+    if (kv.count("pages")) g_pageSpec = str("pages");
+    const std::string pid = str("preset");
+    if (!pid.empty()) {
+        int n = 0;
+        const ocr::ModelPreset* list = ocr::ModelPresetList(&n);
+        for (int i = 0; i < n; ++i) {
+            if (pid == list[i].id) g_presetIdx = i;
+        }
+    }
+}
+
+void SaveSettings() {
+    FILE* f = nullptr;
+    const std::string path = SettingsPath();
+    if (fopen_s(&f, path.c_str(), "wb") != 0 || !f) return;
+    const ocr::ModelPreset* mp = CurrentPreset();
+    std::fprintf(f, "# ocrgui 设置（自动生成，可删）\n");
+    std::fprintf(f, "input=%s\n", g_pdfPath.c_str());
+    std::fprintf(f, "output=%s\n", g_outPath.c_str());
+    std::fprintf(f, "model_dir=%s\n", g_modelDir.c_str());
+    std::fprintf(f, "dpi=%d\n", g_dpi);
+    std::fprintf(f, "threads=%d\n", g_threads);
+    std::fprintf(f, "min_score=%.2f\n", static_cast<double>(g_minScore));
+    std::fprintf(f, "review_score=%.2f\n", static_cast<double>(g_reviewScore));
+    std::fprintf(f, "preset=%s\n", mp ? mp->id : "auto");
+    std::fprintf(f, "merge_row=%d\n", g_mergeRow ? 1 : 0);
+    std::fprintf(f, "dark=%d\n", g_darkTheme ? 1 : 0);
+    std::fprintf(f, "pages=%s\n", g_pageSpec.c_str());
+    std::fclose(f);
+}
+
+void ApplyTheme() {
+    if (g_darkTheme) {
+        ImGui::StyleColorsDark();
+    } else {
+        ImGui::StyleColorsLight();
+    }
+    ImGuiStyle& st = ImGui::GetStyle();
+    st.WindowRounding = 4.0f;
+    st.ChildRounding = 4.0f;
+    st.FrameRounding = 4.0f;
+    st.GrabRounding = 3.0f;
+    st.TabRounding = 4.0f;
+    st.WindowBorderSize = 0.0f;
+    st.FramePadding = ImVec2(8.0f, 4.0f);
+    st.ItemSpacing = ImVec2(8.0f, 6.0f);
+}
+
+/// 把拖进来的 PDF 当作输入
+void DropCallback(GLFWwindow*, int count, const char** paths) {
+    for (int i = 0; i < count; ++i) {
+        std::string path(paths[i] ? paths[i] : "");
+        if (path.size() < 5) continue;
+        std::string ext = path.substr(path.size() - 4);
+        for (char& c : ext) c = static_cast<char>(::tolower(static_cast<unsigned char>(c)));
+        if (ext != ".pdf") continue;
+        g_pdfPath = path;
+        g_outPath = DefaultOutputPath(path);
+        PushLog("拖入 PDF：" + path);
+        return;
+    }
+}
+
+/// 选择回灌用的复核 CSV
+void PickFixCsvDialog() {
+    wchar_t file[1024] = L"";
+    if (!g_fixCsv.empty()) wcsncpy_s(file, Utf8ToWide(g_fixCsv).c_str(), _TRUNCATE);
+    OPENFILENAMEW ofn = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = GetActiveWindow();
+    ofn.lpstrFilter = L"CSV 文件 (*.csv)\0*.csv\0\0";
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = 1024;
+    ofn.lpstrDefExt = L"csv";
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    if (!GetOpenFileNameW(&ofn)) return;
+    g_fixCsv = WideToUtf8(file);
+    PushLog("已选择复核 CSV：" + g_fixCsv);
+    PushLog("点「开始识别」应用修改（同参数下会命中缓存，很快）");
 }
 
 void OpenPdfDialog() {
@@ -235,6 +384,7 @@ void StartOcr() {
     const int dpi = g_dpi;
     const float minScore = g_minScore;
     g_lastDpi = static_cast<double>(dpi);
+    SaveSettings();  // 每次开跑就落盘，异常退出也不丢参数
 
     g_worker = std::thread([=]() {
         pdf::OcrRunOptions opt;
@@ -246,13 +396,14 @@ void StartOcr() {
         opt.threads = threads;
         opt.minScore = minScore;
         opt.maskOriginal = true;
-        opt.resume = g_resume;
+        opt.resume = g_resume || !g_fixCsv.empty();
         const ocr::ModelPreset *mp = CurrentPreset();
         opt.detModel = mp->det;
         opt.recModel = mp->rec;
         opt.clsModel = mp->cls;
         opt.mergeGapRatio = g_mergeRow ? 0.8f : 0.0f;
         opt.pages = pages;
+        opt.fixCsvPath = g_fixCsv;
 
         pdf::OcrRunStats stats;
         std::string err;
@@ -309,6 +460,12 @@ std::string FmtDur(double sec) {
 /// 「识别」页
 void DrawOcrTab() {
     if (ImGui::Button("打开 PDF...", ImVec2(140, 0)) && !g_running) OpenPdfDialog();
+    ImGui::SameLine();
+    if (ImGui::Checkbox("深色主题", &g_darkTheme)) ApplyTheme();
+    if (g_pdfPath.empty()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("或把 PDF 拖进窗口");
+    }
     ImGui::SameLine();
     ImGui::TextWrapped("%s", g_pdfPath.empty() ? "（未选择文件）" : g_pdfPath.c_str());
     ImGui::TextWrapped("输出：%s", g_outPath.empty() ? "（自动）" : g_outPath.c_str());
@@ -388,6 +545,12 @@ void DrawOcrTab() {
             if (ImGui::SmallButton("查看识别框")) g_switchToPreview = true;
             ImGui::SameLine();
             if (ImGui::SmallButton("导出复核 CSV")) ExportReviewCsv();
+            ImGui::SameLine();
+            if (ImGui::SmallButton("回灌复核 CSV")) PickFixCsvDialog();
+            if (!g_fixCsv.empty()) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("已选 %s", g_fixCsv.c_str());
+            }
         }
     }
 
@@ -548,6 +711,7 @@ void DrawPreviewTab() {
 #endif
 int RunGui() {
     g_modelDir = ExeDir() + "\\models";
+    LoadSettings();
     if (!glfwInit()) return 1;
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
@@ -565,8 +729,9 @@ int RunGui() {
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
-    ImGui::StyleColorsDark();
+    ApplyTheme();
     ImGui_ImplGlfw_InitForOpenGL(window, true);
+    glfwSetDropCallback(window, DropCallback);
     ImGui_ImplOpenGL3_Init("#version 330");
 
     ImFontConfig cfg;
@@ -610,7 +775,11 @@ int RunGui() {
         int w, h;
         glfwGetFramebufferSize(window, &w, &h);
         glViewport(0, 0, w, h);
-        glClearColor(0.1f, 0.1f, 0.12f, 1.0f);
+        if (g_darkTheme) {
+            glClearColor(0.10f, 0.10f, 0.12f, 1.0f);
+        } else {
+            glClearColor(0.94f, 0.94f, 0.96f, 1.0f);
+        }
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         glfwSwapBuffers(window);
@@ -627,6 +796,7 @@ int RunGui() {
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
     glfwDestroyWindow(window);
+    SaveSettings();
     glfwTerminate();
     return 0;
 }

@@ -169,6 +169,15 @@ bool RunPdfOcr(const OcrRunOptions& opt, const OcrProgress& progress, OcrRunStat
         }
     }
 
+    // 复核 CSV（人工改过的文字），识别后按 页/行 覆盖
+    std::vector<TextFix> fixes;
+    if (!opt.fixCsvPath.empty()) {
+        if (!LoadTextFixes(opt.fixCsvPath, &fixes, &message)) {
+            if (err) *err = message;
+            return false;
+        }
+    }
+
     std::vector<PageResult> results(static_cast<size_t>(n));
     std::atomic<int> next{0};
 
@@ -279,6 +288,7 @@ bool RunPdfOcr(const OcrRunOptions& opt, const OcrProgress& progress, OcrRunStat
     int donePages = 0;
     int cachedPages = 0;
     int ocrPages = 0;
+    int fixedLines = 0;
     int linesTotal = 0;
     for (int i = 0; i < n && ok; ++i) {
         {
@@ -288,6 +298,15 @@ bool RunPdfOcr(const OcrRunOptions& opt, const OcrProgress& progress, OcrRunStat
         if (failed.load()) {
             ok = false;
             break;
+        }
+        for (const auto& fx : fixes) {
+            if (fx.page != pages[i] + 1) continue;
+            const int idx = fx.line - 1;
+            if (idx < 0 || idx >= static_cast<int>(results[i].lines.size())) continue;
+            if (results[i].lines[idx].text != fx.text) {
+                results[i].lines[idx].text = fx.text;
+                ++fixedLines;
+            }
         }
         if (!layer.AddPage(pages[i], results[i].lines, &message)) {
             if (err) *err = "写入第 " + std::to_string(pages[i] + 1) + " 页文字层失败: " + message;
@@ -349,6 +368,7 @@ bool RunPdfOcr(const OcrRunOptions& opt, const OcrProgress& progress, OcrRunStat
         stats->lineCount = linesTotal;
         stats->cachedPages = cachedPages;
         stats->ocrPages = ocrPages;
+        stats->fixedLines = fixedLines;
         stats->maskedFonts = layer.MaskedFonts();
         stats->maskedCodes = layer.MaskedCodes();
         stats->seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();

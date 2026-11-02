@@ -20,6 +20,16 @@ bool WriteLinesCsv(const std::string& path, const std::vector<OcrPageLines>& pag
 ///   p <页号> <宽> <高>
 ///   l <x0> <y0> <x1> <y1> <score> <文字>
 /// 追加写，崩溃后最多丢半行；载入时按 dpi 校验，不符则整体忽略。
+/// 复核 CSV 中的一条文字修正（按 页号 + 页内行号 定位）
+struct TextFix {
+    int page = 0;      // 1 起的绝对页号（与导出的 CSV 一致）
+    int line = 0;      // 1 起的页内行号
+    std::string text;  // 修正后的文字
+};
+
+/// 读取复核 CSV（Excel 改完再存也能读）：至少要有 页/行/文字 三列，文字取最后一列
+bool LoadTextFixes(const std::string& path, std::vector<TextFix>* fixes, std::string* err);
+
 class LineCacheWriter {
 public:
     LineCacheWriter() = default;

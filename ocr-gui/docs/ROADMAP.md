@@ -97,13 +97,13 @@ ocrgui --image <图片> [--out <json>] [--dump-crops <目录>] [--threads N]
 
 ## 3. 待办（用户指定顺序 2 → 3 → 1 → 4；2、3、1 已完成）
 
-### ④ GUI 交互增强（下一步）
+### ✅ GUI 交互增强（第 4 项，2026-11-02 完成）
 
-- 拖拽 PDF 到窗口直接打开（Win32 `WM_DROPFILES`）
-- 主题切换（浅色/深色）、字号缩放
-- 记住上次输入/输出目录、线程数、DPI、模型预设、合并开关（`%LOCALAPPDATA%\ocrgui\settings.ini`）
-- 复核闭环：CSV 改完文字后回填重生成 PDF（目前「导出但没有回灌」）
-- 结果面板：显示各模型耗时/置信度，便于选型
+- 拖拽打开：`glfwSetDropCallback`，只认 `.pdf`，顺手填好默认输出路径
+- 主题切换：OCR 页签「深色主题」复选框，`ApplyTheme()` 立即生效，`glClearColor` 跟随主题
+- 参数记忆：`%LOCALAPPDATA%\ocrgui\settings.ini`，记住输入/输出、模型目录、DPI、线程、`--min-score`、复核阈值、预设、合并开关、页码、主题（开跑与退出时各存一次）
+- 复核回灌：GUI「回灌复核 CSV」按钮 / CLI `--fix-csv <csv>`，按 `page`+`line` 覆盖文字（缓存页同样生效），配合 `--resume` 秒出
+- 实测：2 页 v5 合并后 **87 行**（`--merge-gap 0` 为 125 行）；10 页 v5 637 行；CSV 回灌 2 行后复导出为修正值
 
 ### 其他 backlog
 

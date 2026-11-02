@@ -76,7 +76,8 @@ int RunPdfCli(const std::string &pdfPath, const std::string &outPdf, const std::
               const std::string &pageSpec, bool maskOriginal, const std::string &csvPath,
               float reviewScore,
               bool resume, const std::string &cachePath, const std::string &detModel,
-              const std::string &recModel, const std::string &clsModel, float mergeGap) {
+              const std::string &recModel, const std::string &clsModel, float mergeGap,
+              const std::string &fixCsv) {
 #ifdef OCRGUI_HAS_MUPDF
     namespace fs = std::filesystem;
     if (fontPath.empty()) {
@@ -110,6 +111,7 @@ int RunPdfCli(const std::string &pdfPath, const std::string &outPdf, const std::
     opt.recModel = recModel;
     opt.clsModel = clsModel;
     opt.mergeGapRatio = mergeGap;
+    opt.fixCsvPath = fixCsv;
     if (!pageSpec.empty() && !pdf::ParsePageSpec(pageSpec, &opt.pages)) {
         std::fprintf(stderr, "页码参数无效: %s\n", pageSpec.c_str());
         return 2;
@@ -151,6 +153,9 @@ int RunPdfCli(const std::string &pdfPath, const std::string &outPdf, const std::
                 stats.maskSeconds, stats.saveSeconds);
     std::printf("待复核：%d 行（置信度 < %.2f）\n", stats.reviewLines, opt.reviewScore);
     if (!csvPath.empty()) std::printf("复核 CSV：%s\n", csvPath.c_str());
+    if (!fixCsv.empty() && stats.fixedLines > 0) {
+        std::printf("复核回灌：应用了 %d 行文字修正\n", stats.fixedLines);
+    }
     if (resume) {
         std::printf("断点续跑：缓存命中 %d 页 / 新识别 %d 页\n", stats.cachedPages, stats.ocrPages);
     }
@@ -160,7 +165,7 @@ int RunPdfCli(const std::string &pdfPath, const std::string &outPdf, const std::
     (void)pdfPath; (void)outPdf; (void)modelDir; (void)fontPath; (void)dpi; (void)threads;
     (void)minScore; (void)pageSpec; (void)maskOriginal; (void)csvPath; (void)reviewScore;
     (void)resume; (void)cachePath; (void)detModel; (void)recModel; (void)clsModel;
-    (void)mergeGap;
+    (void)mergeGap; (void)fixCsv;
     std::fprintf(stderr, "本版本未编译 MuPDF 支持，无法处理 PDF\n");
     return 1;
 #endif
@@ -189,6 +194,7 @@ int RunCli(int argc, char **argv) {
     std::string cachePath;
     std::string preset, detModel, recModel, clsModel;
     float mergeGap = 0.8f;
+    std::string fixCsv;
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -234,6 +240,8 @@ int RunCli(int argc, char **argv) {
             clsModel = argv[++i];
         } else if (a == "--merge-gap" && i + 1 < argc) {
             mergeGap = std::stof(argv[++i]);
+        } else if (a == "--fix-csv" && i + 1 < argc) {
+            fixCsv = argv[++i];
         } else if (a == "--threads" && i + 1 < argc) {
             threads = std::stoi(argv[++i]);
         } else if (a == "--help" || a == "-h") {
@@ -276,7 +284,7 @@ int RunCli(int argc, char **argv) {
     if (!pdfPath.empty()) {
         return RunPdfCli(pdfPath, outPdf, modelDir, fontPath, dpi, threads, minScore, pageSpec,
                          maskOriginal, csvPath, reviewScore, resume, cachePath, detModel,
-                         recModel, clsModel, mergeGap);
+                         recModel, clsModel, mergeGap, fixCsv);
     }
 
     if (imagePath.empty()) {

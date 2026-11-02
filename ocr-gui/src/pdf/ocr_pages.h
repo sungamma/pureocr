@@ -23,6 +23,7 @@ struct OcrRunOptions {
     std::string recModel;      // rec 模型：同上
     std::string clsModel;      // 方向分类模型：同上
     float mergeGapRatio = 0.8f;  // 同行碎片合并阈值（× 行高）；0 = 关闭
+    std::string fixCsvPath;      // 复核 CSV：识别后按 页/行 回填人工修正的文字
     bool maskOriginal = true;  // 屏蔽原文字层，复制文字只输出 OCR 结果
     std::vector<int> pages;    // 0 基页号；空表示全部
 };
@@ -47,7 +48,8 @@ struct OcrRunStats {
     std::vector<OcrPageLines> pageLines;
     int reviewLines = 0;
     int cachedPages = 0;  // 断点续跑命中缓存的页数
-    int ocrPages = 0;     // 本次真正跑 OCR 的页数  // 低于 reviewScore 的行数
+    int ocrPages = 0;     // 本次真正跑 OCR 的页数
+    int fixedLines = 0;   // 复核 CSV 回填的行数  // 低于 reviewScore 的行数
 };
 
 /// 进度回调：done/total 页数，pageIndex 为刚写入文字层的页，lines 为该页行数
