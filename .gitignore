@@ -25,3 +25,14 @@ CMakeUserPresets.json
 # 临时文件
 *.log
 *.tmp
+
+# 测试与临时产物（不入库）
+test/
+tests/
+ocrwork/
+*.csv
+*.ocrcache
+*_复核.csv
+*_抽样.pdf
+*.tsv
+*.lock
