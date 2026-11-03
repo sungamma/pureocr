@@ -452,14 +452,19 @@ bool TextLayer::AddPage(int pageIndex, const std::vector<ocr::TextLine>& lines, 
 
         stream = pdf_add_stream(ctx_, doc_, buf, nullptr, 1);
 
-        contents = pdf_resolve_indirect(ctx_, pdf_dict_get(ctx_, pageObj, PDF_NAME(Contents)));
+        // /Contents 要原样保留"间接引用"：数组元素和单个流都必须是 xref 引用。
+        // 若把 pdf_resolve_indirect 之后的流对象直接塞进数组，保存时它只能写成字典
+        // （reading 时报 object is not a stream），页面内容随之丢失，成品 PDF 变成空白页。
+        pdf_obj* contentsRef = pdf_dict_get(ctx_, pageObj, PDF_NAME(Contents));
+        contents = pdf_resolve_indirect(ctx_, contentsRef);
         pdf_obj* newContents = pdf_new_array(ctx_, doc_, 8);
         pdf_array_push(ctx_, newContents, stream);
         if (pdf_is_array(ctx_, contents)) {
             const int n = pdf_array_len(ctx_, contents);
             for (int i = 0; i < n; ++i) pdf_array_push(ctx_, newContents, pdf_array_get(ctx_, contents, i));
-        } else if (contents) {
-            pdf_array_push(ctx_, newContents, contents);
+        } else if (contents && !pdf_is_null(ctx_, contents)) {
+            pdf_array_push(ctx_, newContents,
+                           pdf_is_indirect(ctx_, contentsRef) ? contentsRef : contents);
         }
         pdf_dict_put_drop(ctx_, pageObj, PDF_NAME(Contents), newContents);
     }

@@ -161,6 +161,19 @@ bool FileExistsUtf8(const std::string& path) {
     return GetFileAttributesW(Utf8ToWide(path).c_str()) != INVALID_FILE_ATTRIBUTES;
 }
 
+/// OCR 文本层要嵌入的字体：优先黑体，再退化到楷体 / 雅黑 / 宋体。
+/// 以前这里写死 simhei.ttf，没装该字体的机器会直接"文本层初始化失败"。
+std::string OcrFontPath() {
+    static const char* kCandidates[] = {"C:\\Windows\\Fonts\\simhei.ttf",
+                                        "C:\\Windows\\Fonts\\simkai.ttf",
+                                        "C:\\Windows\\Fonts\\msyh.ttc",
+                                        "C:\\Windows\\Fonts\\simsun.ttc"};
+    for (const char* c : kCandidates) {
+        if (FileExistsUtf8(c)) return c;
+    }
+    return kCandidates[0];
+}
+
 /// %LOCALAPPDATA%\ocrgui\settings.ini
 std::string SettingsPath() {
     std::string dir;
@@ -579,7 +592,7 @@ void StartOcr() {
         opt.inputPath = pdf;
         opt.outputPath = out;
         opt.modelDir = modelDir;
-        opt.fontPath = "C:\\Windows\\Fonts\\simhei.ttf";
+        opt.fontPath = OcrFontPath();
         opt.dpi = dpi;
         opt.threads = threads;
         opt.minScore = minScore;
