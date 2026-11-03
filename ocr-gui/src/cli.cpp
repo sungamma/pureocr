@@ -144,6 +144,11 @@ int RunPdfCli(const std::string &pdfPath, const std::string &outPdf, const std::
         return 1;
     }
 
+    if (!stats.verifyNote.empty()) {
+        std::printf("注意：输出自检没能执行（%s）\n", stats.verifyNote.c_str());
+    } else if (stats.verifiedPages > 0) {
+        std::printf("输出自检：%d 页内容完整\n", stats.verifiedPages);
+    }
     std::error_code ec1, ec2;
     const auto inSize = fs::file_size(inPath, ec1);
     const auto outSize = fs::file_size(outPath, ec2);

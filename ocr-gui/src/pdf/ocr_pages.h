@@ -49,7 +49,9 @@ struct OcrRunStats {
     int reviewLines = 0;
     int cachedPages = 0;  // 断点续跑命中缓存的页数
     int ocrPages = 0;     // 本次真正跑 OCR 的页数
-    int fixedLines = 0;   // 复核 CSV 回填的行数  // 低于 reviewScore 的行数
+    int fixedLines = 0;
+    int verifiedPages = 0;   // 成品自检通过（内容完整）的页数
+    std::string verifyNote;   // 自检没能执行的原因（非空时说明这次没验证上）   // 复核 CSV 回填的行数  // 低于 reviewScore 的行数
 };
 
 /// 进度回调：done/total 页数，pageIndex 为刚写入文字层的页，lines 为该页行数

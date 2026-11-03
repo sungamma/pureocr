@@ -76,6 +76,7 @@ if (EXISTS "${MUPDF_DIR}/lib/libmupdf.lib")
   list(APPEND OCR_SOURCES
     src/pdf/doc.cpp
     src/pdf/textlayer.cpp
+src/pdf/output_check.cpp
     src/pdf/ocr_pages.cpp
     src/pdf/preview.cpp
     src/pdf/lines_io.cpp

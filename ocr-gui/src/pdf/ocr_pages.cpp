@@ -15,6 +15,7 @@
 #include "ocr/engine.h"
 #include "pdf/doc.h"
 #include "pdf/lines_io.h"
+#include "pdf/output_check.h"
 #include "pdf/textlayer.h"
 
 namespace pdf {
@@ -161,7 +162,7 @@ bool RunPdfOcr(const OcrRunOptions& opt, const OcrProgress& progress, OcrRunStat
     double maskSeconds = 0.0;
     if (opt.maskOriginal) {
         const auto tm0 = std::chrono::steady_clock::now();
-        const bool ok = layer.MaskOriginalText(&message);
+        const bool ok = layer.MaskOriginalText(pages, &message);
         maskSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - tm0).count();
         if (!ok) {
             if (err) *err = "屏蔽原文字层失败: " + message;
@@ -345,6 +346,35 @@ bool RunPdfOcr(const OcrRunOptions& opt, const OcrProgress& progress, OcrRunStat
     if (!saved) {
         if (err) *err = "保存 PDF 失败: " + message;
         return false;
+    }
+
+    // 成品自检：重新打开输出，逐页和原 PDF 比"墨迹"。
+    // 写回内容流一旦出错（例如 Contents 结构特殊），页面会整页变白但保存照样成功，
+    // 用户只会看到"OCR 完什么都没有"。这里兜底：宁可报错，也不交付空壳 PDF。
+    {
+        OutputCheck check;
+        std::string checkErr;
+        if (CheckOutput(opt.inputPath, opt.outputPath, pages, &check, &checkErr)) {
+            if (stats) stats->verifiedPages = check.checked;
+            if (!check.lostPages.empty()) {
+                std::string list;
+                for (size_t k = 0; k < check.lostPages.size() && k < 8; ++k) {
+                    if (!list.empty()) list += ",";
+                    list += std::to_string(check.lostPages[k]);
+                }
+                if (check.lostPages.size() > 8) list += ",...";
+                const std::wstring deleted = ToWide(opt.outputPath);
+                DeleteFileW(deleted.c_str());  // 别把坏文件留在磁盘上冒充成功
+                if (err) {
+                    *err = "输出校验失败：第 " + list +
+                           " 页内容丢失（这个 PDF 的结构太特殊，写回被拒绝了）。已删除无效成品，"
+                           "请把这页 PDF 反馈给开发者。";
+                }
+                return false;
+            }
+        } else if (stats) {
+            stats->verifyNote = checkErr;  // 自检本身跑不起来不阻断，日志里能看到
+        }
     }
 
     cache.Close();  // 缓存只是中间产物，完成后关闭

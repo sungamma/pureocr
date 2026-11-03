@@ -252,6 +252,43 @@ int TextLayer::GlyphId(uint32_t cp) {
     return gid;
 }
 
+void TextLayer::CollectFontNums(pdf_obj* resources, int depth, std::vector<int>* out,
+                                std::vector<int>* seenRes) {
+    if (!resources || depth > 8) return;
+    resources = pdf_resolve_indirect(ctx_, resources);
+    if (!pdf_is_dict(ctx_, resources)) return;
+    const int num = pdf_to_num(ctx_, resources);
+    if (num > 0) {
+        if (std::find(seenRes->begin(), seenRes->end(), num) != seenRes->end()) return;
+        seenRes->push_back(num);
+    }
+
+    pdf_obj* fonts = pdf_dict_get(ctx_, resources, PDF_NAME(Font));
+    if (pdf_is_dict(ctx_, fonts)) {
+        const int n = pdf_dict_len(ctx_, fonts);
+        for (int i = 0; i < n; ++i) {
+            pdf_obj* font = pdf_resolve_indirect(ctx_, pdf_dict_get_val(ctx_, fonts, i));
+            if (!pdf_is_dict(ctx_, font)) continue;
+            const int fnum = pdf_to_num(ctx_, font);
+            if (fnum > 0 && std::find(out->begin(), out->end(), fnum) == out->end()) {
+                out->push_back(fnum);
+            }
+        }
+    }
+
+    pdf_obj* xobjects = pdf_dict_get(ctx_, resources, PDF_NAME(XObject));
+    if (pdf_is_dict(ctx_, xobjects)) {
+        const int n = pdf_dict_len(ctx_, xobjects);
+        for (int i = 0; i < n; ++i) {
+            pdf_obj* xo = pdf_resolve_indirect(ctx_, pdf_dict_get_val(ctx_, xobjects, i));
+            if (!pdf_is_dict(ctx_, xo)) continue;
+            if (!pdf_name_eq(ctx_, pdf_dict_get(ctx_, xo, PDF_NAME(Subtype)), PDF_NAME(Form))) continue;
+            pdf_obj* sub = pdf_dict_get(ctx_, xo, PDF_NAME(Resources));
+            if (pdf_is_dict(ctx_, sub)) CollectFontNums(sub, depth + 1, out, seenRes);
+        }
+    }
+}
+
 void TextLayer::MaskResources(pdf_obj* resources, int depth) {
     if (!resources || depth > 8) return;
     resources = pdf_resolve_indirect(ctx_, resources);
@@ -272,6 +309,13 @@ void TextLayer::MaskResources(pdf_obj* resources, int depth) {
             if (fnum > 0) {
                 if (std::find(seenFonts_.begin(), seenFonts_.end(), fnum) != seenFonts_.end()) continue;
                 seenFonts_.push_back(fnum);
+            }
+
+            // 这个字体也被"本次不 OCR 的页"用到：动了它，那些页复制出来就变空白了
+            if (fnum > 0 && !protectedFonts_.empty() &&
+                std::find(protectedFonts_.begin(), protectedFonts_.end(), fnum) !=
+                    protectedFonts_.end()) {
+                continue;
             }
 
             CmapCodes parsed;
@@ -338,17 +382,39 @@ void TextLayer::MaskResources(pdf_obj* resources, int depth) {
     }
 }
 
-bool TextLayer::MaskOriginalText(std::string* err) {
+bool TextLayer::MaskOriginalText(const std::vector<int>& ocrPages, std::string* err) {
     if (!ctx_ || !doc_) {
-        if (err) *err = "文字层未初始化";
+        if (err) *err = "文本层未初始化";
         return false;
     }
     seenResources_.clear();
     seenFonts_.clear();
+    protectedFonts_.clear();
+    const auto wantPage = [&ocrPages](int page) {
+        if (ocrPages.empty()) return true;  // 空 = 全部
+        return std::find(ocrPages.begin(), ocrPages.end(), page) != ocrPages.end();
+    };
     std::string message;
     fz_try(ctx_) {
         const int pages = pdf_count_pages(ctx_, doc_);
+        // 第一步：先记下"这次不处理"的页用到的字体，它们必须原样保留。
+        // 否则只 OCR 前几页时，后面没处理的页会把可复制文本一起清成零宽字符。
+        const bool partial = !ocrPages.empty() && static_cast<int>(ocrPages.size()) < pages;
+        if (partial) {
+            std::vector<int> seenRes;
+            for (int i = 0; i < pages; ++i) {
+                if (wantPage(i)) continue;
+                pdf_page* page = pdf_load_page(ctx_, doc_, i);
+                pdf_obj* res = nullptr;
+                fz_try(ctx_) { res = pdf_page_resources(ctx_, page); }
+                fz_always(ctx_) { fz_drop_page(ctx_, reinterpret_cast<fz_page*>(page)); }
+                fz_catch(ctx_) { fz_rethrow(ctx_); }
+                CollectFontNums(res, 0, &protectedFonts_, &seenRes);
+            }
+        }
+        // 第二步：只对本次 OCR 的页做屏蔽。
         for (int i = 0; i < pages; ++i) {
+            if (!wantPage(i)) continue;
             pdf_page* page = pdf_load_page(ctx_, doc_, i);
             pdf_obj* res = nullptr;
             fz_try(ctx_) { res = pdf_page_resources(ctx_, page); }

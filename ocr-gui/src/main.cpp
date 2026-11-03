@@ -635,6 +635,13 @@ void StartOcr() {
             std::snprintf(buf, sizeof(buf), "完成：%d 页 / %d 行，屏蔽原字体 %d 个，用时 %.1f 秒",
                           stats.pageCount, stats.lineCount, stats.maskedFonts, stats.seconds);
             PushLog(buf);
+            if (!stats.verifyNote.empty()) {
+                PushLog("注意：输出自检没能执行（" + stats.verifyNote + "）");
+            } else if (stats.verifiedPages > 0) {
+                char vbuf[96];
+                std::snprintf(vbuf, sizeof(vbuf), "输出校验：%d 页内容完整", stats.verifiedPages);
+                PushLog(vbuf);
+            }
             summary = buf;
             if (stats.cachedPages > 0 || stats.ocrPages > 0) {
                 char cbuf[160];

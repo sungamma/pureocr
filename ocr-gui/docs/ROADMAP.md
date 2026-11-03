@@ -137,6 +137,10 @@ ocrgui --image <图片> [--out <json>] [--dump-crops <目录>] [--threads N]
 - PowerShell 输出中文常乱码，读写文件、跑测试请走 Python（`io.open(..., encoding='utf-8')` + `PYTHONIOENCODING=utf-8`）
 - 基线（10 页 / 300dpi / 4 线程 / v5 / 合并开）：**637 行**、待复核 34、约 44 s
 - 别留常驻 python 进程（曾残留占 CPU）
+- **PDF `/Contents` 必须保留"间接引用"**：把 `pdf_resolve_indirect` 之后的流对象塞进新的 Contents 数组，保存时它只能被写成字典（读取报 `object is not a stream`），整页内容随之丢失 → 成品全白。单流 `/Contents` 的 PDF 必现（`测试/test.pdf` 就是）。改这段必须「数组按元素拷贝、单流塞回原引用」
+- **屏蔽原文字体只能作用于本次 OCR 的页**：`MaskOriginalText` 原来遍历整个文档，只 OCR 前几页会把其余页的可复制文本一起清成 U+200B（看得见、复制全空）。现在先收集「本次不处理页」用到的字体并跳过；几页共享同一字体对象时仍无法拆开，属于既有取舍
+- 凡是"写回 PDF"的改动**必须有输出自检兜底**（见第 5 节），历史上出过一次静默产出空白 PDF
+
 
 ## 5. 验证清单（改完必跑）
 
@@ -152,4 +156,8 @@ ocrgui --image <图片> [--out <json>] [--dump-crops <目录>] [--threads N]
 [ ] `--preset v5s` 可用（两个服务器版模型，已校验）
 [ ] `--preset v5 --det-model/--rec-model` 显式指定时不被预设覆盖
 [ ] 预览页签识别框与文字位置对齐
+[ ] 单流 /Contents 的 PDF（`测试/test.pdf`，3 页）跑完：成品有字，日志出现「输出自检：3 页内容完整」
+[ ] 只 OCR 部分页（`--pages 1`）：未处理页文本仍可正常提取（不能出现 U+200B）
+[ ] 自检能抓坏输出：拿历史空白产物做墨迹对比，应判 LOST 并删掉坏文件
+
 ```

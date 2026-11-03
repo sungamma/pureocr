@@ -37,7 +37,9 @@ public:
 
     /// 把原文档已有字体（可能 ToUnicode 损坏）的字符全部映射成零宽字符，
     /// 这样复制出来的文字只包含 OCR 结果。
-    bool MaskOriginalText(std::string* err);
+    /// ocrPages 为本次要 OCR 的页（0 起）；只有这些页用到的字体会被屏蔽，
+    /// 未 OCR 的页保持原字体，避免把它们本来就能复制/搜索的文字一起清零。
+    bool MaskOriginalText(const std::vector<int>& ocrPages, std::string* err);
 
     /// 为单页写入隐形文字层，lines 坐标为渲染图像素坐标
     bool AddPage(int pageIndex, const std::vector<ocr::TextLine>& lines, std::string* err);
@@ -55,6 +57,9 @@ public:
 private:
     int GlyphId(uint32_t codepoint);
     void MaskResources(pdf_obj* resources, int depth);
+    /// 只收集资源树里出现的字体对象号（不改任何东西），用于保护未 OCR 的页
+    void CollectFontNums(pdf_obj* resources, int depth, std::vector<int>* out,
+                         std::vector<int>* seenRes);
     void SubsetOcrFont();
 
     fz_context* ctx_ = nullptr;
@@ -75,6 +80,7 @@ private:
     std::unordered_map<uint32_t, int> gidCache_;
     std::vector<int> seenResources_;
     std::vector<int> seenFonts_;
+    std::vector<int> protectedFonts_;  // 未 OCR 页用到的字体对象号，不能屏蔽
 };
 
 }  // namespace pdf
