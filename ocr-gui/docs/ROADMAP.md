@@ -35,7 +35,7 @@ Start-Process -Wait -WindowStyle Hidden -FilePath $exe -ArgumentList @('--pdf', 
 
 ```
 ocrgui --pdf <in.pdf> [--out-pdf <out.pdf>] [--dpi 300] [--threads 4]
-       [--pages 1-10,15] [--font <ttf>] [--no-mask] [--min-score 0.5]
+       [--pages 1-10,15] [--font <ttf>] [--mask] [--min-score 0.5]
        [--csv <导出.csv>] [--review-score 0.75] [--resume] [--cache <缓存.tsv>]
        [--preset auto|v5|v5s|v4|v4s|v3] [--det-model <文件名|绝对路径>]
        [--rec-model <文件名|绝对路径>] [--cls-model <文件名>]
@@ -49,7 +49,7 @@ ocrgui --image <图片> [--out <json>] [--dump-crops <目录>] [--threads N]
 | 里程碑 | 内容 |
 |---|---|
 | M1 | 引擎骨架 + 单图识别 + CLI + `--dump-crops` |
-| M2 | PDF → 可复制文字 PDF：逐页渲染 → OCR → 屏蔽原文层 → 叠加隐形文字层；并发 worker（每 worker 一个 ORT session） |
+| M2 | PDF → 可复制文字 PDF：逐页渲染 → OCR → 叠加隐形文字层（默认不屏蔽原文层，`--mask` 才屏蔽）；并发 worker（每 worker 一个 ORT session） |
 | M3-① | 页范围 `--pages`、另存为、打开输出目录、`tools/package.ps1` 打包 |
 | M3-② | 低置信度复核：`--review-score` / `--csv` 导出、GUI 复核阈值滑块、`tools/review_sheet.py` 抽样拼版 PDF |
 | M3-③ | 预览页签（渲染 + 识别框叠加 + 只看低置信度）、进度剩余时间、主窗口铺满 |
@@ -139,6 +139,8 @@ ocrgui --image <图片> [--out <json>] [--dump-crops <目录>] [--threads N]
 - 别留常驻 python 进程（曾残留占 CPU）
 - **PDF `/Contents` 必须保留"间接引用"**：把 `pdf_resolve_indirect` 之后的流对象塞进新的 Contents 数组，保存时它只能被写成字典（读取报 `object is not a stream`），整页内容随之丢失 → 成品全白。单流 `/Contents` 的 PDF 必现（`测试/test.pdf` 就是）。改这段必须「数组按元素拷贝、单流塞回原引用」
 - **屏蔽原文字体只能作用于本次 OCR 的页**：`MaskOriginalText` 原来遍历整个文档，只 OCR 前几页会把其余页的可复制文本一起清成 U+200B（看得见、复制全空）。现在先收集「本次不处理页」用到的字体并跳过；几页共享同一字体对象时仍无法拆开，属于既有取舍
+- **默认不改原文字体，只叠加隐形文本层**：唯一写点是页面的 `/Contents`（追加一个内容流），原字体/编码/字形一律不碰。历史两次翻车（整页空白、非 OCR 页文本被清空）都出在改原文字体上，所以默认零改动。需要“替换”效果时显式打开 `--mask`（GUI 复选框「用 OCR 文本替换原文」），且仅当**整篇都 OCR** 时生效；只 OCR 部分页会自动跳过屏蔽并在日志提示。
+- **自检两条线**：墨迹对比抓空白页；未开 `--mask` 时额外比对成品与原页的可见字符数（原页 ≥20 字且成品 <50% 判 textLoss），防止叠层把原文挤掉。
 - 凡是"写回 PDF"的改动**必须有输出自检兜底**（见第 5 节），历史上出过一次静默产出空白 PDF
 
 
@@ -159,5 +161,7 @@ ocrgui --image <图片> [--out <json>] [--dump-crops <目录>] [--threads N]
 [ ] 单流 /Contents 的 PDF（`测试/test.pdf`，3 页）跑完：成品有字，日志出现「输出自检：3 页内容完整」
 [ ] 只 OCR 部分页（`--pages 1`）：未处理页文本仍可正常提取（不能出现 U+200B）
 [ ] 自检能抓坏输出：拿历史空白产物做墨迹对比，应判 LOST 并删掉坏文件
+[ ] 默认（无 `--mask`）：成品页上原文与 OCR 文本并存，原文页可见字符数不下降（自检不报 textLoss）
+[ ] `--mask --pages 1`：日志出现「部分页处理：已自动跳过 --mask」，未处理页字符数与原件逐页一致
 
 ```

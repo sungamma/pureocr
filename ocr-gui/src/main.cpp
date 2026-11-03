@@ -75,6 +75,7 @@ unsigned int g_shotTex = 0;
 bool g_resume = false;  // 断点续跑
 int g_presetIdx = -1;  // -1 = 未初始化，默认选「自动探测」
 bool g_mergeRow = true;   // 合并同一行的碎片
+bool g_maskOriginal = false;  // 用 OCR 文本替换原文（屏蔽原文字体）；默认关
 bool g_darkTheme = true;  // 深色主题
 std::string g_fixCsv;     // 复核 CSV（回灌用）
 
@@ -232,6 +233,7 @@ void LoadSettings() {
     if (num("min_score") > 0) g_minScore = static_cast<float>(num("min_score"));
     if (num("review_score") > 0) g_reviewScore = static_cast<float>(num("review_score"));
     if (kv.count("merge_row")) g_mergeRow = str("merge_row") != "0";
+    if (kv.count("mask")) g_maskOriginal = str("mask") != "0";
     if (kv.count("dark")) g_darkTheme = str("dark") != "0";
     if (kv.count("download_source")) g_dlSourceIdx = std::atoi(str("download_source").c_str());
     if (kv.count("pages")) g_pageSpec = str("pages");
@@ -260,6 +262,7 @@ void SaveSettings() {
     std::fprintf(f, "review_score=%.2f\n", static_cast<double>(g_reviewScore));
     std::fprintf(f, "preset=%s\n", mp ? mp->id : "auto");
     std::fprintf(f, "merge_row=%d\n", g_mergeRow ? 1 : 0);
+    std::fprintf(f, "mask=%d\n", g_maskOriginal ? 1 : 0);
     std::fprintf(f, "dark=%d\n", g_darkTheme ? 1 : 0);
     std::fprintf(f, "download_source=%d\n", g_dlSourceIdx);
     std::fprintf(f, "pages=%s\n", g_pageSpec.c_str());
@@ -596,7 +599,7 @@ void StartOcr() {
         opt.dpi = dpi;
         opt.threads = threads;
         opt.minScore = minScore;
-        opt.maskOriginal = true;
+        opt.maskOriginal = g_maskOriginal;
         opt.resume = g_resume || !g_fixCsv.empty();
         const ocr::ModelPreset *mp = CurrentPreset();
         opt.detModel = mp->det;
@@ -632,9 +635,25 @@ void StartOcr() {
             summary = "失败：" + err;
         } else {
             char buf[256];
-            std::snprintf(buf, sizeof(buf), "完成：%d 页 / %d 行，屏蔽原字体 %d 个，用时 %.1f 秒",
-                          stats.pageCount, stats.lineCount, stats.maskedFonts, stats.seconds);
+            if (stats.maskedFonts > 0) {
+                std::snprintf(buf, sizeof(buf), "完成：%d 页 / %d 行，替换原文（屏蔽字体 %d 个），用时 %.1f 秒",
+                              stats.pageCount, stats.lineCount, stats.maskedFonts, stats.seconds);
+            } else {
+                std::snprintf(buf, sizeof(buf), "完成：%d 页 / %d 行（原文保留，仅叠加隐形文字层），用时 %.1f 秒",
+                              stats.pageCount, stats.lineCount, stats.seconds);
+            }
             PushLog(buf);
+            if (stats.stackedPages > 0) {
+                char sbuf[256];
+                std::snprintf(sbuf, sizeof(sbuf),
+                              "%d 页原文本来就能复制，成品里原文与 OCR 文本并存（复制会看到两份）；"
+                              "想只保留 OCR 文本请勾选「用 OCR 文本替换原文」",
+                              stats.stackedPages);
+                PushLog(sbuf);
+            }
+            if (stats.maskSkippedPartial) {
+                PushLog("部分页处理：已自动跳过「用 OCR 文本替换原文」，未处理页的文字保持可复制");
+            }
             if (!stats.verifyNote.empty()) {
                 PushLog("注意：输出自检没能执行（" + stats.verifyNote + "）");
             } else if (stats.verifiedPages > 0) {
@@ -1055,6 +1074,16 @@ void DrawSidebar() {
         ImGui::Checkbox("合并同行碎片", &g_mergeRow);
         ImGui::SameLine(0.0f, 16.0f * s);
         if (ImGui::Checkbox("深色主题", &g_darkTheme)) ApplyTheme();
+        // 「替换原文」会改跨页共享的字体对象，单独一行给足说明，默认不勾。
+        ImGui::Checkbox("用 OCR 文本替换原文", &g_maskOriginal);
+        ImGui::SameLine(0.0f, 6.0f * s);
+        ImGui::TextDisabled("(?)");
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(
+                "勾选：屏蔽原文档的字体映射，复制/搜索只剩 OCR 文本。\n"
+                "它会改写跨页共享的字体对象，只在「处理全部页」时生效。\n"
+                "不勾选（默认）：原文与 OCR 文本并存，只往页面追加内容，最安全。");
+        }
         sContentH = ImGui::GetCursorPosY();  // 记下参数区实际高度
     }
     ImGui::EndChild();

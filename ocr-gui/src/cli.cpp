@@ -144,6 +144,14 @@ int RunPdfCli(const std::string &pdfPath, const std::string &outPdf, const std::
         return 1;
     }
 
+    if (stats.stackedPages > 0) {
+        std::printf("%d 页原文本来就能复制，成品里原文与 OCR 文本并存（复制会看到两份）；"
+                    "想只保留 OCR 文本请加 --mask\n",
+                    stats.stackedPages);
+    }
+    if (stats.maskSkippedPartial) {
+        std::printf("部分页处理：已自动跳过 --mask（否则未处理页的文字会被一起清掉）\n");
+    }
     if (!stats.verifyNote.empty()) {
         std::printf("注意：输出自检没能执行（%s）\n", stats.verifyNote.c_str());
     } else if (stats.verifiedPages > 0) {
@@ -157,10 +165,19 @@ int RunPdfCli(const std::string &pdfPath, const std::string &outPdf, const std::
         std::printf("原文件：%.2f MB　输出：%.2f MB\n", static_cast<double>(inSize) / 1048576.0,
                     static_cast<double>(outSize) / 1048576.0);
     }
-    std::printf("共 %d 页，写入 %d 行；屏蔽原字体 %d 个、字符编码 %d 个\n", stats.pageCount,
-                stats.lineCount, stats.maskedFonts, stats.maskedCodes);
-    std::printf("用时：%.1f 秒（其中屏蔽原文字层 %.1f 秒，保存 %.1f 秒）\n", stats.seconds,
-                stats.maskSeconds, stats.saveSeconds);
+    if (stats.maskedFonts > 0) {
+        std::printf("共 %d 页，写入 %d 行；替换原文（屏蔽字体 %d 个、字符编码 %d 个）\n",
+                    stats.pageCount, stats.lineCount, stats.maskedFonts, stats.maskedCodes);
+    } else {
+        std::printf("共 %d 页，写入 %d 行（原文保留，仅叠加隐形文字层）\n", stats.pageCount,
+                    stats.lineCount);
+    }
+    if (stats.maskSeconds > 0.001) {
+        std::printf("用时：%.1f 秒（其中屏蔽原文字层 %.1f 秒，保存 %.1f 秒）\n", stats.seconds,
+                    stats.maskSeconds, stats.saveSeconds);
+    } else {
+        std::printf("用时：%.1f 秒（保存 %.1f 秒）\n", stats.seconds, stats.saveSeconds);
+    }
     std::printf("待复核：%d 行（置信度 < %.2f）\n", stats.reviewLines, opt.reviewScore);
     if (!csvPath.empty()) std::printf("复核 CSV：%s\n", csvPath.c_str());
     if (!fixCsv.empty() && stats.fixedLines > 0) {
@@ -262,7 +279,8 @@ int RunCli(int argc, char **argv) {
     float reviewScore = 0.75f;
     int threads = 0;
     double dpi = 300.0;
-    bool maskOriginal = true;
+    // 默认只叠加隐形文本层（不动原文）；--mask 才屏蔽原文字体
+    bool maskOriginal = false;
     bool resume = false;
     std::string cachePath;
     std::string preset, detModel, recModel, clsModel;
@@ -287,6 +305,8 @@ int RunCli(int argc, char **argv) {
             fontPath = argv[++i];
         } else if (a == "--log" && i + 1 < argc) {
             logPath = argv[++i];
+        } else if (a == "--mask") {
+            maskOriginal = true;
         } else if (a == "--no-mask") {
             maskOriginal = false;
         } else if (a == "--model-dir" && i + 1 < argc) {
@@ -326,7 +346,7 @@ int RunCli(int argc, char **argv) {
         } else if (a == "--help" || a == "-h") {
             std::printf("用法:\n");
             std::printf("  ocrgui --pdf <输入.pdf> [--out-pdf <输出.pdf>] [--dpi 300] [--threads 4]\n");
-            std::printf("         [--pages 1-10,15] [--font <ttf>] [--no-mask] [--min-score 0.5]\n");
+            std::printf("         [--pages 1-10,15] [--font <ttf>] [--mask] [--min-score 0.5]\n");
             std::printf("         [--csv <复核.csv>] [--review-score 0.75]\n");
             std::printf("         [--model-dir <模型目录>] [--log <日志文件>]\n");
             std::printf("         [--resume] [--cache <缓存.tsv>]  断点续跑：已完成页跳过\n");

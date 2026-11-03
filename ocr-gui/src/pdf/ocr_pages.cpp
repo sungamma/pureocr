@@ -159,8 +159,14 @@ bool RunPdfOcr(const OcrRunOptions& opt, const OcrProgress& progress, OcrRunStat
         if (err) *err = message;
         return false;
     }
+    // 屏蔽原文字体改的是「跨页共享的字体对象」，是最容易误伤全局的一步。
+    // 约定：只在「本次处理了全部页」时才允许；部分页一律跳过，否则未处理页的
+    // 可复制文本会被一起清成零宽字符（视觉看不出来，复制却是空白）。
     double maskSeconds = 0.0;
-    if (opt.maskOriginal) {
+    const bool fullDocument = static_cast<int>(pages.size()) == pageCount;
+    const bool doMask = opt.maskOriginal && fullDocument;
+    if (opt.maskOriginal && !fullDocument && stats) stats->maskSkippedPartial = true;
+    if (doMask) {
         const auto tm0 = std::chrono::steady_clock::now();
         const bool ok = layer.MaskOriginalText(pages, &message);
         maskSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - tm0).count();
@@ -354,20 +360,30 @@ bool RunPdfOcr(const OcrRunOptions& opt, const OcrProgress& progress, OcrRunStat
     {
         OutputCheck check;
         std::string checkErr;
-        if (CheckOutput(opt.inputPath, opt.outputPath, pages, &check, &checkErr)) {
-            if (stats) stats->verifiedPages = check.checked;
-            if (!check.lostPages.empty()) {
+        // 没做屏蔽时，成品里的文字只会比原件多（OCR 文本是叠加的），字符数可以当判据；
+        // 做了屏蔽时原文本来就被清成零宽字符，这条判据不适用。
+        if (CheckOutput(opt.inputPath, opt.outputPath, pages, !doMask, &check, &checkErr)) {
+            if (stats) {
+                stats->verifiedPages = check.checked;
+                stats->stackedPages = check.stackedPages;
+            }
+            const bool broken = !check.lostPages.empty() || !check.textLossPages.empty();
+            if (broken) {
+                std::vector<int> bad = check.lostPages;
+                bad.insert(bad.end(), check.textLossPages.begin(), check.textLossPages.end());
+                std::sort(bad.begin(), bad.end());
                 std::string list;
-                for (size_t k = 0; k < check.lostPages.size() && k < 8; ++k) {
+                for (size_t k = 0; k < bad.size() && k < 8; ++k) {
                     if (!list.empty()) list += ",";
-                    list += std::to_string(check.lostPages[k]);
+                    list += std::to_string(bad[k]);
                 }
-                if (check.lostPages.size() > 8) list += ",...";
+                if (bad.size() > 8) list += ",...";
                 const std::wstring deleted = ToWide(opt.outputPath);
                 DeleteFileW(deleted.c_str());  // 别把坏文件留在磁盘上冒充成功
                 if (err) {
                     *err = "输出校验失败：第 " + list +
-                           " 页内容丢失（这个 PDF 的结构太特殊，写回被拒绝了）。已删除无效成品，"
+                           (check.lostPages.empty() ? " 页的文字提取被打断了" : " 页内容丢失") +
+                           "（这个 PDF 的结构太特殊，写回被拒绝了）。已删除无效成品，"
                            "请把这页 PDF 反馈给开发者。";
                 }
                 return false;
