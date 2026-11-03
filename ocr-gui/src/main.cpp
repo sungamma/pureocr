@@ -30,6 +30,9 @@
 
 #include "util/path_util.h"
 #include "util/utf8_io.h"
+#include "util/http_download.h"
+#include "util/model_download.h"
+#include "util/model_registry.h"
 #include "cli.h"
 #ifdef OCRGUI_HAS_MUPDF
 #include "pdf/doc.h"
@@ -74,6 +77,15 @@ int g_presetIdx = -1;  // -1 = 未初始化，默认选「自动探测」
 bool g_mergeRow = true;   // 合并同一行的碎片
 bool g_darkTheme = true;  // 深色主题
 std::string g_fixCsv;     // 复核 CSV（回灌用）
+
+// ---- 模型在线下载（GUI）----
+util::DownloadHandle g_dl;
+std::thread g_dlThread;
+std::atomic<bool> g_dlActive{false};
+std::string g_dlError;    // 最近一次失败原因（受 g_mutex 保护）
+int g_modelStamp = 0;     // 模型文件变化计数：用来刷新下拉里的「缺模型」标记
+int g_dlSourceIdx = 0;    // 0=自动 1=官方 2=镜像（hf-mirror）
+bool g_openDlPopup = false;  // 请求打开「缺少模型」弹窗
 
 int DefaultPresetIndex() {
     int n = 0;
@@ -208,6 +220,7 @@ void LoadSettings() {
     if (num("review_score") > 0) g_reviewScore = static_cast<float>(num("review_score"));
     if (kv.count("merge_row")) g_mergeRow = str("merge_row") != "0";
     if (kv.count("dark")) g_darkTheme = str("dark") != "0";
+    if (kv.count("download_source")) g_dlSourceIdx = std::atoi(str("download_source").c_str());
     if (kv.count("pages")) g_pageSpec = str("pages");
     const std::string pid = str("preset");
     if (!pid.empty()) {
@@ -235,6 +248,7 @@ void SaveSettings() {
     std::fprintf(f, "preset=%s\n", mp ? mp->id : "auto");
     std::fprintf(f, "merge_row=%d\n", g_mergeRow ? 1 : 0);
     std::fprintf(f, "dark=%d\n", g_darkTheme ? 1 : 0);
+    std::fprintf(f, "download_source=%d\n", g_dlSourceIdx);
     std::fprintf(f, "pages=%s\n", g_pageSpec.c_str());
     std::fclose(f);
 }
@@ -445,9 +459,83 @@ void OpenOutputFolder() {
     ShellExecuteW(nullptr, L"open", Utf8ToWide(dir).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
+// ---- 模型清单 / 缺件判断 / 下载（GUI 用）----
+
+// registry.ini 只在该文件或模型目录变化时重新读，避免每帧 I/O。
+const std::vector<util::ModelFile>& ModelRegistryCached() {
+    static std::vector<util::ModelFile> cache;
+    static std::string key;
+    const std::string k = g_modelDir + "#" + std::to_string(g_modelStamp);
+    if (k != key) {
+        cache = util::LoadModelRegistry(g_modelDir);
+        key = k;
+    }
+    return cache;
+}
+
+// 当前预设缺哪些模型（det/rec/cls 里不存在的）
+std::vector<util::ModelFile> MissingModels() {
+    std::vector<util::ModelFile> out;
+    const ocr::ModelPreset* mp = CurrentPreset();
+    if (!mp || g_modelDir.empty()) return out;
+    const std::vector<util::ModelFile>& reg = ModelRegistryCached();
+    for (const char* f : {mp->det, mp->rec, mp->cls}) {
+        if (!f || !*f) continue;
+        if (util::FileReady(util::JoinPath(g_modelDir, f))) continue;
+        if (const util::ModelFile* info = util::FindModelFile(reg, f)) {
+            out.push_back(*info);
+        } else {
+            util::ModelFile m;
+            m.file = f;
+            out.push_back(m);
+        }
+    }
+    return out;
+}
+
+void StartModelDownload() {
+    if (g_dlActive.load()) return;
+    const std::vector<util::ModelFile> missing = MissingModels();
+    if (missing.empty()) return;
+    if (g_dlThread.joinable()) g_dlThread.join();  // 上一轮已经 join 过，这里只是保险
+
+    const std::string dir = g_modelDir;
+    const bool preferMirror = g_dlSourceIdx == 2;
+    g_dl.received = 0;
+    g_dl.total = 0;
+    g_dl.cancel = false;
+    g_dl.finished = false;
+    g_dl.success = false;
+    {
+        std::lock_guard<std::mutex> lk(g_mutex);
+        g_dlError.clear();
+    }
+
+    std::int64_t total = 0;
+    for (const auto& m : missing) total += m.size;
+    PushLog("开始下载模型：" + std::to_string(missing.size()) + " 个文件 / " + util::FormatBytes(total));
+
+    g_dlActive = true;
+    g_dlThread = std::thread([dir, missing, preferMirror]() {
+        std::string err;
+        const bool ok = util::FetchModels(dir, missing, preferMirror, &g_dl, &err);
+        g_dl.success = ok;
+        g_dl.finished = true;
+        std::lock_guard<std::mutex> lk(g_mutex);
+        g_dlError = ok ? std::string() : err;
+    });
+}
+
 void StartOcr() {
 #ifdef OCRGUI_HAS_MUPDF
     if (g_running) return;
+    {
+        const std::vector<util::ModelFile> need = MissingModels();
+        if (!need.empty()) {
+            PushLog("模型不完整：还缺 " + std::to_string(need.size()) + " 个文件，请先点「下载缺失模型」");
+            return;
+        }
+    }
     g_running = true;
     g_done = false;
     g_donePages = 0;
@@ -820,8 +908,9 @@ void DrawSidebar() {
             static std::vector<std::string> labelStore;
             static std::vector<const char*> labels;
             static std::string labelKey;
-            if (labelKey != g_modelDir || static_cast<int>(labels.size()) != pc) {
-                labelKey = g_modelDir;
+            const std::string curKey = g_modelDir + "#" + std::to_string(g_modelStamp);
+            if (labelKey != curKey || static_cast<int>(labels.size()) != pc) {
+                labelKey = curKey;
                 labelStore.clear();
                 labels.clear();
                 for (int i = 0; i < pc; ++i) {
@@ -838,7 +927,9 @@ void DrawSidebar() {
                 for (const auto& text : labelStore) labels.push_back(text.c_str());
             }
             ImGui::SetNextItemWidth(-FLT_MIN);
+            const int presetBefore = g_presetIdx;
             ImGui::Combo("##preset", &g_presetIdx, labels.data(), pc);
+            if (g_presetIdx != presetBefore && !MissingModels().empty()) g_openDlPopup = true;
         }
 
         static char pageBuf[128] = "";
@@ -870,13 +961,44 @@ void DrawSidebar() {
         }
 #endif
         if (!g_modelDir.empty()) {
-            int pc = 0;
-            const ocr::ModelPreset* presets = ocr::ModelPresetList(&pc);
-            if (g_presetIdx >= 0 && g_presetIdx < pc) {
-                const char* det = presets[g_presetIdx].det;
-                if (det && det[0] && !FileExistsUtf8(g_modelDir + "\\" + det)) {
-                    ImGui::TextColored(ImVec4(0.95f, 0.55f, 0.35f, 1.0f),
-                                       "缺 %s（先跑 fetch_models.py --server）", det);
+            // 下载线程收尾：必须在这里 join，否则下一轮给 joinable 的 thread 赋值会 std::terminate
+            if (g_dlActive.load() && g_dl.finished.load()) {
+                if (g_dlThread.joinable()) g_dlThread.join();
+                g_dlActive = false;
+                g_dl.finished = false;
+                ++g_modelStamp;
+                std::string err;
+                {
+                    std::lock_guard<std::mutex> lk(g_mutex);
+                    err = g_dlError;
+                }
+                PushLog(err.empty() ? "模型下载完成" : ("模型下载失败：" + err));
+            }
+
+            const std::vector<util::ModelFile> missing = MissingModels();
+            if (!missing.empty()) {
+                std::int64_t totalBytes = 0;
+                for (const auto& m : missing) totalBytes += m.size;
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.62f, 0.36f, 1.0f));
+                ImGui::TextWrapped("缺 %d 个模型文件（%s）", static_cast<int>(missing.size()),
+                                   util::FormatBytes(totalBytes).c_str());
+                ImGui::PopStyleColor();
+                if (g_dlActive.load()) {
+                    const std::int64_t got = g_dl.received.load();
+                    const std::int64_t tot = g_dl.total.load();
+                    const float frac = tot > 0
+                                           ? static_cast<float>(static_cast<double>(got) / static_cast<double>(tot))
+                                           : 0.0f;
+                    char overlay[128];
+                    if (tot > 0) {
+                        std::snprintf(overlay, sizeof(overlay), "%s / %s",
+                                      util::FormatBytes(got).c_str(), util::FormatBytes(tot).c_str());
+                    } else {
+                        std::snprintf(overlay, sizeof(overlay), "%s", util::FormatBytes(got).c_str());
+                    }
+                    ImGui::ProgressBar(frac, ImVec2(-FLT_MIN, 0.0f), overlay);
+                } else if (ImGui::Button("下载缺失模型…", ImVec2(-FLT_MIN, 0.0f))) {
+                    g_openDlPopup = true;
                 }
             }
         }
@@ -984,6 +1106,85 @@ void CenterText(const char* text, ImVec4 color) {
 }
 
 /// 右侧预览区：页导航 + 常驻画布（竖版页面按高度铺满）
+// ---- 缺少模型时的下载弹窗 ----
+void DrawDownloadModal() {
+    if (g_openDlPopup) {
+        ImGui::OpenPopup("缺少模型###dlg");
+        g_openDlPopup = false;
+    }
+    const float s = g_uiScale;
+    ImGui::SetNextWindowSize(ImVec2(600.0f * s, 0.0f), ImGuiCond_Appearing);
+    if (!ImGui::BeginPopupModal("缺少模型###dlg", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
+
+    const std::vector<util::ModelFile> missing = MissingModels();
+    if (missing.empty()) {
+        ImGui::TextUnformatted("模型已经齐全，可以开始识别了。");
+        ImGui::Spacing();
+        if (ImGui::Button("关闭", ImVec2(130.0f * s, 36.0f * s))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+        return;
+    }
+
+    std::int64_t totalBytes = 0;
+    bool noUrl = false;
+    for (const auto& m : missing) {
+        totalBytes += m.size;
+        if (m.url.empty()) noUrl = true;
+    }
+
+    const ocr::ModelPreset* mp = CurrentPreset();
+    ImGui::TextWrapped("预设「%s」需要以下模型，本机还没有：", mp ? mp->label : "");
+    ImGui::Spacing();
+    for (const auto& m : missing) {
+        ImGui::BulletText("%s", m.file.c_str());
+        ImGui::SameLine();
+        ImGui::TextColored(MutedColor(), "%s", util::FormatBytes(m.size).c_str());
+    }
+    ImGui::Spacing();
+    ImGui::TextColored(MutedColor(), "保存到：%s", g_modelDir.c_str());
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    if (g_dlActive.load()) {
+        const std::int64_t got = g_dl.received.load();
+        const std::int64_t tot = g_dl.total.load();
+        const float frac =
+            tot > 0 ? static_cast<float>(static_cast<double>(got) / static_cast<double>(tot)) : 0.0f;
+        char overlay[128];
+        if (tot > 0) {
+            std::snprintf(overlay, sizeof(overlay), "%s / %s", util::FormatBytes(got).c_str(),
+                          util::FormatBytes(tot).c_str());
+        } else {
+            std::snprintf(overlay, sizeof(overlay), "%s", util::FormatBytes(got).c_str());
+        }
+        ImGui::ProgressBar(frac, ImVec2(-FLT_MIN, 0.0f), overlay);
+        const std::string msg = g_dl.Message();
+        if (!msg.empty()) ImGui::TextColored(MutedColor(), "%s", msg.c_str());
+        ImGui::Spacing();
+        if (ImGui::Button("取消下载", ImVec2(130.0f * s, 36.0f * s))) g_dl.cancel = true;
+    } else {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(MutedColor(), "下载源");
+        ImGui::SameLine(96.0f * s);
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::Combo("##dlsource", &g_dlSourceIdx, "自动（官方优先，失败自动换镜像）\0官方 HuggingFace\0镜像 hf-mirror\0");
+        ImGui::Spacing();
+        const std::string btn = "开始下载（" + util::FormatBytes(totalBytes) + "）";
+        ImGui::PushStyleColor(ImGuiCol_Button, AccentColor());
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, AccentHover());
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, AccentActive());
+        if (ImGui::Button(btn.c_str(), ImVec2(230.0f * s, 42.0f * s))) StartModelDownload();
+        ImGui::PopStyleColor(3);
+        ImGui::SameLine();
+        if (ImGui::Button("稍后再说", ImVec2(130.0f * s, 42.0f * s))) ImGui::CloseCurrentPopup();
+        if (noUrl) {
+            ImGui::Spacing();
+            ImGui::TextWrapped("注意：其中有模型没有在线下载源，需要手动放到模型目录。");
+        }
+    }
+    ImGui::EndPopup();
+}
+
 void DrawStage() {
     const float s = g_uiScale;
     if (g_pdfPath.empty()) {
@@ -1155,7 +1356,17 @@ void DrawStage() {
 int RunGui() {
     g_modelDir = ExeDir() + "\\models";
     LoadSettings();
-    if (!glfwInit()) return 1;
+    {
+        // 全新安装（模型目录里一个模型都没有）时直接弹下载向导，省得用户对着「缺模型」发呆
+        bool anyModel = false;
+        for (const auto& m : ModelRegistryCached()) {
+            if (util::FileReady(util::JoinPath(g_modelDir, m.file))) {
+                anyModel = true;
+                break;
+            }
+        }
+        if (!anyModel) g_openDlPopup = true;
+    }    if (!glfwInit()) return 1;
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
@@ -1293,6 +1504,10 @@ int RunGui() {
         ImGui::EndChild();
         ImGui::PopStyleVar();
         ImGui::End();
+
+#ifdef OCRGUI_HAS_MUPDF
+        DrawDownloadModal();
+#endif
 
         ImGui::Render();
         int w, h;

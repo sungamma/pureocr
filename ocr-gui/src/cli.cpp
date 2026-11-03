@@ -3,10 +3,12 @@
 
 #include "util/path_util.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <io.h>
@@ -14,6 +16,8 @@
 
 #include "ocr/engine.h"
 #include "ocr/image.h"
+
+#include "util/model_download.h"
 
 #ifdef OCRGUI_HAS_MUPDF
 #include "pdf/doc.h"
@@ -183,6 +187,69 @@ const ocr::ModelPreset *FindPreset(const std::string &id) {
 
 }  // namespace
 
+// --fetch-models：把指定预设缺的模型下到 modelDir（缺省 v5 移动版）
+int RunFetchModels(const std::string &modelDirIn, const std::string &presetId,
+                   const std::string &source) {
+    const ocr::ModelPreset *mp = FindPreset(presetId);
+    if (!mp) {
+        std::fprintf(stderr, "未知模型预设: %s（可选 auto / v3 / v4 / v4s / v5 / v5s）\n", presetId.c_str());
+        return 2;
+    }
+
+    const std::string modelDir = util::ResolveModelDir(modelDirIn);
+    if (modelDir != modelDirIn) {
+        std::printf("模型目录不可写，改用 %s\n", modelDir.c_str());
+    }
+
+    std::vector<std::string> names;
+    for (const char *f : {mp->det, mp->rec, mp->cls}) {
+        if (f && *f) names.push_back(f);
+    }
+    const std::vector<util::ModelFile> missing = util::MissingForNames(modelDir, names);
+    if (missing.empty()) {
+        std::printf("模型已经齐全：%s\n", modelDir.c_str());
+        return 0;
+    }
+
+    std::int64_t total = 0;
+    for (const auto &m : missing) {
+        total += m.size;
+        std::printf("  缺 %-38s %9s\n", m.file.c_str(), util::FormatBytes(m.size).c_str());
+    }
+    std::printf("共 %zu 个文件，约 %s\n", missing.size(), util::FormatBytes(total).c_str());
+
+    util::DownloadHandle handle;
+    std::atomic<bool> stop{false};
+    std::thread monitor([&handle, &stop]() {
+        double lastPct = -100.0;
+        while (!stop.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            const std::int64_t got = handle.received.load();
+            const std::int64_t tot = handle.total.load();
+            if (tot <= 0) continue;
+            const double pct = 100.0 * static_cast<double>(got) / static_cast<double>(tot);
+            if (pct - lastPct < 1.0) continue;
+            lastPct = pct;
+            std::printf("\r  %5.1f%%  %s / %s   ", pct, util::FormatBytes(got).c_str(),
+                        util::FormatBytes(tot).c_str());
+            std::fflush(stdout);
+        }
+    });
+
+    const bool preferMirror = (source == "mirror");
+    std::string err;
+    const bool ok = util::FetchModels(modelDir, missing, preferMirror, &handle, &err);
+    stop = true;
+    monitor.join();
+    std::printf("\n");
+
+    if (!ok) {
+        std::fprintf(stderr, "下载失败：%s\n", err.c_str());
+        return 1;
+    }
+    std::printf("下载完成，模型目录：%s\n", modelDir.c_str());
+    return 0;
+}
 int RunCli(int argc, char **argv) {
     std::string imagePath, pdfPath, outPdf, modelDir, outPath, dumpDir, fontPath, pageSpec, logPath,
         csvPath;
@@ -196,6 +263,8 @@ int RunCli(int argc, char **argv) {
     std::string preset, detModel, recModel, clsModel;
     float mergeGap = 0.8f;
     std::string fixCsv;
+    bool fetchModels = false;
+    std::string source = "auto";
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -245,6 +314,10 @@ int RunCli(int argc, char **argv) {
             fixCsv = argv[++i];
         } else if (a == "--threads" && i + 1 < argc) {
             threads = std::stoi(argv[++i]);
+        } else if (a == "--fetch-models") {
+            fetchModels = true;
+        } else if (a == "--source" && i + 1 < argc) {
+            source = argv[++i];
         } else if (a == "--help" || a == "-h") {
             std::printf("用法:\n");
             std::printf("  ocrgui --pdf <输入.pdf> [--out-pdf <输出.pdf>] [--dpi 300] [--threads 4]\n");
@@ -255,6 +328,9 @@ int RunCli(int argc, char **argv) {
             std::printf("         [--preset auto|v3|v4|v4s|v5|v5s] [--det-model <文件名|绝对路径>]\n");
             std::printf("         [--rec-model <文件名|绝对路径>] [--cls-model <文件名>]\n");
             std::printf("         [--merge-gap 0.8]  同行碎片合并阈值（×行高，0=关闭）\n");
+            std::printf("  ocrgui --fetch-models [--preset v5] [--model-dir <模型目录>]\n");
+            std::printf("         [--source auto|official|mirror]  缺模型时联网下载\n");
+
             std::printf("  ocrgui --image <图片> [--out <json>] [--dump-crops <目录>] [--threads N]\n");
             return 0;
         } else {
@@ -280,6 +356,10 @@ int RunCli(int argc, char **argv) {
         if (detModel.empty()) detModel = mp->det;
         if (recModel.empty()) recModel = mp->rec;
         if (clsModel.empty()) clsModel = mp->cls;
+    }
+
+    if (fetchModels) {
+        return RunFetchModels(modelDir, preset.empty() ? "v5" : preset, source);
     }
 
     if (!pdfPath.empty()) {

@@ -50,11 +50,26 @@ target_link_libraries(imgui_backend PUBLIC glfw)
 # ---------- 主程序 ----------
 set(MUPDF_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/mupdf-1.25.0" CACHE PATH "MuPDF 目录")
 
+# MuPDF 内嵌 CJK 字体占 32 MB，slim 库由 tools/slim_mupdf.ps1 生成
+option(OCR_MUPDF_SLIM "Use libmupdf-slim.lib (embedded CJK fonts stripped, system fonts instead)" ON)
+set(MUPDF_LIB "${MUPDF_DIR}/lib/libmupdf.lib")
+set(MUPDF_SLIM_LIB "${MUPDF_DIR}/lib/libmupdf-slim.lib")
+set(OCR_MUPDF_SLIM_ACTIVE OFF)
+if (OCR_MUPDF_SLIM AND EXISTS "${MUPDF_SLIM_LIB}")
+  set(MUPDF_LIB "${MUPDF_SLIM_LIB}")
+  set(OCR_MUPDF_SLIM_ACTIVE ON)
+elseif (OCR_MUPDF_SLIM)
+  message(STATUS "libmupdf-slim.lib not found; using full libmupdf.lib (run tools/slim_mupdf.ps1 to save ~32 MB)")
+endif()
+
 set(OCR_SOURCES
   src/main.cpp
   src/cli.cpp
   src/ocr/image.cpp
   src/ocr/engine.cpp
+  src/util/http_download.cpp
+  src/util/model_registry.cpp
+  src/util/model_download.cpp
 )
 if (EXISTS "${MUPDF_DIR}/lib/libmupdf.lib")
   message(STATUS "MuPDF: ${MUPDF_DIR}")
@@ -64,7 +79,11 @@ if (EXISTS "${MUPDF_DIR}/lib/libmupdf.lib")
     src/pdf/ocr_pages.cpp
     src/pdf/preview.cpp
     src/pdf/lines_io.cpp
+    src/pdf/system_fonts.cpp
   )
+  if (OCR_MUPDF_SLIM_ACTIVE)
+    list(APPEND OCR_SOURCES src/pdf/mupdf_font_stubs.cpp)
+  endif()
 else()
   message(WARNING "未找到 ${MUPDF_DIR}/lib/libmupdf.lib，PDF 渲染/文字层功能不可用")
 endif()
@@ -86,13 +105,18 @@ target_link_libraries(ocrgui PRIVATE
   imgui_backend
   opengl32
   comdlg32
+  winhttp
+  bcrypt
   ${ORT_DIR}/lib/onnxruntime.lib
 )
 
 if (EXISTS "${MUPDF_DIR}/lib/libmupdf.lib")
   target_compile_definitions(ocrgui PRIVATE OCRGUI_HAS_MUPDF=1)
   target_include_directories(ocrgui PRIVATE ${MUPDF_DIR}/include)
-  target_link_libraries(ocrgui PRIVATE ${MUPDF_DIR}/lib/libmupdf.lib)
+  target_link_libraries(ocrgui PRIVATE ${MUPDF_LIB})
+  if (OCR_MUPDF_SLIM_ACTIVE)
+    target_compile_definitions(ocrgui PRIVATE OCR_MUPDF_SLIM=1)
+  endif()
 endif()
 
 # 运行期依赖：ORT dll 拷到 exe 旁边

@@ -21,8 +21,8 @@
 cmake --build C:\Users\xwtal\build\ocrgui --config Release
 # 首次或改 CMakeLists 后：
 cmake -S .\ocr-gui -B C:\Users\xwtal\build\ocrgui -G "Visual Studio 17 2022" -A x64
-python tools\fetch_models.py            # 拉 v3/v4/v5（缺的自动从 HF 下载）
-python tools\fetch_models.py --server   # 额外拉 v4 服务器版
+ocrgui.exe --fetch-models            # 拉 v3/v4/v5（缺的自动从 HF 下载）
+ocrgui.exe --fetch-models --preset v5s   # 额外拉 v4 服务器版
 ```
 
 exe 是 **GUI 子系统**，PowerShell 里 `&` 不会等待，必须：

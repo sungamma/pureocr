@@ -48,6 +48,8 @@ param(
     [switch]$SkipBuild,
     [switch]$SkipPackage,
     [switch]$NoZip,
+    [ValidateSet('none', 'basic', 'full')]
+    [string]$Models = 'none',
     [switch]$AllowNoMupdf,
     [switch]$KeepBuild,
     [switch]$Open
@@ -159,8 +161,8 @@ if (-not $SkipPackage) {
     if (Test-Path -LiteralPath $modelsDir) {
         $onnx = @(Get-ChildItem -LiteralPath $modelsDir -Filter '*.onnx' -File -ErrorAction SilentlyContinue)
     }
-    if ($onnx.Count -eq 0) {
-        throw "模型目录 $modelsDir 里没有 .onnx 文件：先运行 python tools\fetch_models.py"
+    if ($onnx.Count -eq 0 -and $Models -ne 'none') {
+        throw "模型目录 $modelsDir 里没有 .onnx 文件：先用 ocrgui.exe --fetch-models 下载，或把 -Models 改成 none"
     }
     $modelMb = [math]::Round((($onnx | Measure-Object Length -Sum).Sum / 1MB), 1)
     Write-Detail "模型         : $($onnx.Count) 个 onnx（$modelMb MB）"
@@ -292,6 +294,7 @@ if (-not $SkipPackage) {
     $pkgArgs = @{ BuildDir = $exeDir; OutDir = $OutDir }
     if ($Version) { $pkgArgs['Version'] = $Version }
     if ($NoZip)   { $pkgArgs['NoZip'] = $true }
+    $pkgArgs['Models'] = $Models
     & (Join-Path $scriptDir 'package.ps1') @pkgArgs
     if ($LASTEXITCODE -ne 0) { throw "打包失败（exit $LASTEXITCODE）。" }
 

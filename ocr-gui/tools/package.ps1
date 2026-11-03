@@ -18,6 +18,8 @@ param(
     [string]$BuildDir = (Join-Path $env:USERPROFILE 'build\ocrgui\Release'),
     [string]$OutDir   = (Join-Path $PSScriptRoot '..\dist'),
     [string]$Version,
+    [ValidateSet('none', 'basic', 'full')]
+    [string]$Models = 'none',
     [switch]$NoZip
 )
 
@@ -32,7 +34,7 @@ if (-not (Test-Path -LiteralPath $exe)) {
     throw "找不到 $exe，请先构建：cmake --build <build> --config Release"
 }
 if (-not (Test-Path -LiteralPath $modelsDir)) {
-    throw "找不到模型目录 $modelsDir，请先运行：python ocr-gui/tools/fetch_models.py"
+    throw "找不到模型目录 $modelsDir，请先运行：ocrgui.exe --fetch-models"
 }
 
 $stamp   = if ($Version) { $Version } else { Get-Date -Format 'yyyyMMdd' }
@@ -53,7 +55,25 @@ New-Item -ItemType Directory -Path $pkgDir -Force | Out-Null
 
 Copy-Item -LiteralPath $exe -Destination $pkgDir
 if (Test-Path -LiteralPath $ortDll) { Copy-Item -LiteralPath $ortDll -Destination $pkgDir }
-Copy-Item -LiteralPath $modelsDir -Destination (Join-Path $pkgDir 'models') -Recurse
+# ---- 模型：默认只带字典和清单，onnx 由首次运行时的下载向导 / --fetch-models 获取 ----
+$modelsOut = Join-Path $pkgDir 'models'
+New-Item -ItemType Directory -Path $modelsOut -Force | Out-Null
+foreach ($name in @('ppocrv5_dict.txt', 'registry.ini', 'README.md')) {
+    $src = Join-Path $modelsDir $name
+    if (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination $modelsOut }
+}
+$modelNames = @()
+if ($Models -eq 'basic') {
+    $modelNames = @('ch_PP-OCRv5_det_infer.onnx', 'ch_PP-OCRv5_rec_infer.onnx', 'ch_ppocr_mobile_v2.0_cls_infer.onnx')
+} elseif ($Models -eq 'full') {
+    $modelNames = @(Get-ChildItem -LiteralPath $modelsDir -Filter '*.onnx' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+}
+foreach ($name in $modelNames) {
+    $src = Join-Path $modelsDir $name
+    if (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination $modelsOut }
+}
+$onnxCn = @(Get-ChildItem -LiteralPath $modelsOut -Filter '*.onnx' -File -ErrorAction SilentlyContinue).Count
+Write-Host "模型打包：$Models（$onnxCn 个 onnx）"
 
 $readme = 'PDF OCR 工具（C++ 版）
 =====================
@@ -122,12 +142,12 @@ Set-Content -LiteralPath (Join-Path $pkgDir 'run-cli.ps1') -Value $runCli -Encod
 $commit = ''
 try { $commit = (& git -C $repoRoot rev-parse --short HEAD 2>$null) } catch { }
 $buildLines = @(
-    "ocrgui 打包信息",
+    "ocrgui 构建信息",
     "================",
     "构建时间 : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')",
     "提交     : $commit",
-    "模型     : PP-OCR v3 / v4 / v5 移动版 + v5 服务器版",
-    "运行环境 : Windows 10/11 x64，纯 CPU（ONNX Runtime），无需显卡"
+    "模型     : $Models（none = 首次运行在线下载）",
+    "运行环境 : Windows 10/11 x64（纯 CPU，ONNX Runtime，不需要显卡）"
 )
 Set-Content -LiteralPath (Join-Path $pkgDir 'BUILD.txt') -Value $buildLines -Encoding utf8
 

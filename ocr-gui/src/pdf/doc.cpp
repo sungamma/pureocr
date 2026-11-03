@@ -2,6 +2,8 @@
 
 #include <cstring>
 
+#include "pdf/system_fonts.h"
+
 #include "mupdf/fitz.h"
 #include "mupdf/pdf.h"
 
@@ -55,6 +57,10 @@ bool Document::Open(const std::string& path, std::string* err) {
 
     ctx_ = fz_new_context(nullptr, nullptr, FZ_STORE_DEFAULT);
     if (!ctx_) return fail("无法创建 MuPDF 上下文");
+#if defined(OCR_MUPDF_SLIM)
+    // slim 版剔除了内嵌 CJK 字体，回退字体改从 Windows 系统字体目录取
+    InstallSystemFontHooks(ctx_);
+#endif
     fz_try(ctx_) {
         fz_register_document_handlers(ctx_);
         fzDoc_ = fz_open_document(ctx_, path.c_str());

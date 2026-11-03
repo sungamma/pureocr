@@ -1,7 +1,18 @@
 # 模型目录
 
+## 在线下载（推荐）
+
+发布包默认**不带** onnx 模型（体积从 225 MB 降到 ~26 MB）。缺模型时有两种下法：
+
+- 图形界面：首次启动会弹「缺少模型」向导；也可以在下拉里选到带 `[缺模型]` 的预设，点「下载缺失模型…」
+- 命令行：`ocrgui.exe --fetch-models --preset v5`（`--model-dir` 指定目录，`--source mirror` 走 hf-mirror 镜像）
+
+下载走 WinHTTP，支持断点续传（`.part` 临时文件）和 SHA256 校验；源地址写在 `models\registry.ini`，
+也可以直接改这份文件换成自建镜像（exe 里有一份相同的内置清单）。
+
+
 程序默认从 `ocr-gui/models`（或 exe 同级的 `models/`）加载，文件名固定，放哪个版本就识别哪一版；
-`auto` 模式按 **v5 → v4 → v3** 顺序探测。重新拉取：`python tools/fetch_models.py`。
+`auto` 模式按 **v5 → v4 → v3** 顺序探测。重新拉取：`ocrgui.exe --fetch-models`。
 
 | 文件 | 用途 | 大小 | 来源 |
 |---|---|---|---|
@@ -23,7 +34,7 @@
 
 - v3/v4 的 rec 模型自带 `character` metadata 字典；**v5 没有**，必须配 `ppocrv5_dict.txt`
   （输出维度 18385 = blank + 18383 字典项 + 末尾空格）
-- v4 服务器版（`*_server_infer.onnx`，更准但慢 3~10 倍）未入库，需要时 `python tools/fetch_models.py --server`
+- v4 服务器版（`*_server_infer.onnx`，更准但慢 3~10 倍）未入库，需要时 `ocrgui.exe --fetch-models --preset v5s`
 - 模型版权归 PaddleOCR 项目（Apache-2.0），此处仅为便于本机运行而随仓库分发
 
 
