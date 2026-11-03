@@ -155,7 +155,7 @@ void PushLog(const std::string& line) {
 }
 
 std::string DefaultOutputPath(const std::string& input) {
-    return util::InsertBeforeExtension(input, "_可复制文字");
+    return util::InsertBeforeExtension(input, "_OCR");
 }
 
 bool FileExistsUtf8(const std::string& path) {

@@ -96,7 +96,7 @@ int RunPdfCli(const std::string &pdfPath, const std::string &outPdf, const std::
         outPath = fs::u8path(outPdf);
     } else {
         outPath = inPath;
-        outPath = fs::u8path(util::InsertBeforeExtension(pdfPath, "_可复制文字"));
+        outPath = fs::u8path(util::InsertBeforeExtension(pdfPath, "_OCR"));
     }
 
     pdf::OcrRunOptions opt;
@@ -365,9 +365,14 @@ int RunCli(int argc, char **argv) {
     }
 
     if (!logPath.empty()) {
-        FILE *lf = nullptr;
-        if (freopen_s(&lf, logPath.c_str(), "w", stdout) == 0 && lf) {
-            _dup2(_fileno(stdout), _fileno(stderr));
+        // 不能用 freopen_s：char* 路径按 ANSI 代码页解释，中文路径打不开；
+        // 而且打开失败时 stdout 会被关掉，后续 printf 触发「无效参数」直接中止进程（闪退）。
+        if (FILE *lf = util::OpenUtf8(logPath, L"w")) {
+            _dup2(_fileno(lf), _fileno(stdout));
+            _dup2(_fileno(lf), _fileno(stderr));
+            std::fclose(lf);  // stdout/stderr 已持有复制出来的句柄
+        } else {
+            std::fprintf(stderr, "警告：日志文件无法写入（%s），本次只输出到控制台\n", logPath.c_str());
         }
     }
     if (modelDir.empty()) modelDir = DefaultModelDir();
