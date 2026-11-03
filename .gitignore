@@ -34,3 +34,6 @@ ocrwork/
 *_抽样.pdf
 *.tsv
 *.lock
+
+# 批量 OCR 输入目录（用户自己的 PDF，不入库）
+tobeocr/
