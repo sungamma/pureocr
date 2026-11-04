@@ -1225,75 +1225,84 @@ void DrawSidebar() {
             }
         }
 
-        // 两列参数：列坐标自己算并取整。
-        // 用 BeginGroup + SameLine 时，控件宽度带小数（中文标签宽度不是整数）会累积出
-        // 半像素坐标，右列的文字就被画在 x.5 上，看着发虚、像乱码。
+        // 两列参数：先画一行「标签 … 数值」，下一行再画两个滑块，左右列用 SameLine 对齐。
+        // 两列共用同一行的 Y —— 不用 BeginGroup，也就不会出现右列掉半行的问题。
+        // 坐标按「设备像素」取整：125%/150% 缩放下 1 逻辑像素 != 1 物理像素，
+        // 只按逻辑像素取整，文字仍旧落在物理半像素上，看着发虚。
+        const ImVec2 fbScale = ImGui::GetIO().DisplayFramebufferScale;
+        const float pxUnit = (fbScale.x > 0.01f) ? fbScale.x : 1.0f;
+        auto px = [pxUnit](float v) { return std::floor(v * pxUnit + 0.5f) / pxUnit; };
+
         const float gap = 14.0f * s;
-        const float rowX = std::floor(ImGui::GetCursorPosX());
-        const float colW = std::floor((ImGui::GetContentRegionAvail().x - gap) * 0.5f);
-        const float col2X = rowX + colW + gap;
-        auto snapX = []() { ImGui::SetCursorPosX(std::floor(ImGui::GetCursorPosX())); };
-        // 数值放标签行右端（跟标签同一行，天然对齐），滑块占满整列：
-        //   ① 滑块把手跟着值走，数字写在中线会被正好挡住（0.55 看起来像 0.5）
-        //   ② 数值贴着滑块右侧放，和滑块那个 30px 高的框做垂直居中总要差半像素，看着歪
-        auto valueRow = [&](const char* label, const char* value) {
-            const float x0 = std::floor(ImGui::GetCursorPosX());
-            ImGui::TextColored(MutedColor(), "%s", label);
-            const float tw = ImGui::CalcTextSize(value).x;
-            const float xr = std::floor(x0 + colW - tw);
-            if (xr > ImGui::GetCursorPosX() + 8.0f * s) {
-                ImGui::SameLine();
-                ImGui::SetCursorPosX(xr);
-                ImGui::TextUnformatted(value);
+        const float rowX = px(ImGui::GetCursorPosX());
+        const float colW = px((ImGui::GetContentRegionAvail().x - gap) * 0.5f);
+        const float col2X = px(rowX + colW + gap);
+        // 每行开头都把 Y 也对齐到设备像素，否则整行文字会因为行高累积小数而发虚
+        auto newRow = [&]() { ImGui::SetCursorPos(ImVec2(rowX, px(ImGui::GetCursorPosY()))); };
+
+        // 标签行：左列「标签 …… 数值」，右列同理，数值右对齐到本列右边界
+        auto labelRow = [&](const char* l1, const char* v1, const char* l2, const char* v2) {
+            newRow();
+            ImGui::TextColored(MutedColor(), "%s", l1);
+            {
+                const float xr = px(rowX + colW - ImGui::CalcTextSize(v1).x);
+                if (xr > ImGui::GetCursorPosX() + 8.0f * s) {
+                    ImGui::SameLine();
+                    ImGui::SetCursorPosX(xr);
+                    ImGui::TextUnformatted(v1);
+                }
+            }
+            ImGui::SameLine(col2X);
+            ImGui::TextColored(MutedColor(), "%s", l2);
+            {
+                const float xr = px(col2X + colW - ImGui::CalcTextSize(v2).x);
+                if (xr > ImGui::GetCursorPosX() + 8.0f * s) {
+                    ImGui::SameLine();
+                    ImGui::SetCursorPosX(xr);
+                    ImGui::TextUnformatted(v2);
+                }
             }
         };
-        auto numCell = [&](const char* label, const char* id, int* v, int lo, int hi) {
-            char buf[32];
-            std::snprintf(buf, sizeof(buf), "%d", *v);
-            valueRow(label, buf);
-            ImGui::SetNextItemWidth(colW);
-            ImGui::SliderInt(id, v, lo, hi, "");
-        };
-        auto fracCell = [&](const char* label, const char* id, float* v, float lo, float hi) {
-            char buf[32];
-            std::snprintf(buf, sizeof(buf), "%.2f", static_cast<double>(*v));
-            valueRow(label, buf);
-            ImGui::SetNextItemWidth(colW);
-            ImGui::SliderFloat(id, v, lo, hi, "", ImGuiSliderFlags_AlwaysClamp);
-        };
 
-        // 用 BeginGroup/EndGroup 把「标签 + 滑块 + 数值」包成一格，
-        // SameLine 才会把右列对齐到本行行首（直接 SameLine 会接在滑块那一行上，
-        // 右列整体掉半行）。列宽、列坐标都是整数，避免文字画在半像素上发虚。
-        ImGui::BeginGroup();
-        numCell("线程数", "##threads", &g_threads, 1, 16);
-        ImGui::EndGroup();
+        char vb1[32], vb2[32];
+
+        // 第 1 组：线程数 / 渲染 DPI
+        std::snprintf(vb1, sizeof(vb1), "%d", g_threads);
+        std::snprintf(vb2, sizeof(vb2), "%d", g_dpi);
+        labelRow("线程数", vb1, "渲染 DPI", vb2);
+        newRow();
+        ImGui::SetNextItemWidth(colW);
+        ImGui::SliderInt("##threads", &g_threads, 1, 16, "");
         ImGui::SameLine(col2X);
-        ImGui::BeginGroup();
-        numCell("渲染 DPI", "##dpi", &g_dpi, 150, 400);
-        ImGui::EndGroup();
+        ImGui::SetNextItemWidth(colW);
+        ImGui::SliderInt("##dpi", &g_dpi, 150, 400, "");
 
-        ImGui::BeginGroup();
-        fracCell("最低置信度", "##minscore", &g_minScore, 0.10f, 0.90f);
-        ImGui::EndGroup();
+        // 第 2 组：最低置信度 / 复核阈值
+        std::snprintf(vb1, sizeof(vb1), "%.2f", static_cast<double>(g_minScore));
+        std::snprintf(vb2, sizeof(vb2), "%.2f", static_cast<double>(g_reviewScore));
+        labelRow("最低置信度", vb1, "复核阈值", vb2);
+        newRow();
+        ImGui::SetNextItemWidth(colW);
+        ImGui::SliderFloat("##minscore", &g_minScore, 0.10f, 0.90f, "", ImGuiSliderFlags_AlwaysClamp);
         ImGui::SameLine(col2X);
-        ImGui::BeginGroup();
-        fracCell("复核阈值", "##reviewscore", &g_reviewScore, 0.50f, 0.95f);
-        ImGui::EndGroup();
+        ImGui::SetNextItemWidth(colW);
+        ImGui::SliderFloat("##reviewscore", &g_reviewScore, 0.50f, 0.95f, "",
+                           ImGuiSliderFlags_AlwaysClamp);
 
-        ImGui::SetCursorPosX(rowX);
+        // 勾选框行：同样按设备像素对齐
+        newRow();
         ImGui::Checkbox("断点续跑", &g_resume);
         ImGui::SameLine(0.0f, 16.0f * s);
-        snapX();
+        ImGui::SetCursorPosX(px(ImGui::GetCursorPosX()));
         ImGui::Checkbox("合并同行碎片", &g_mergeRow);
         ImGui::SameLine(0.0f, 16.0f * s);
-        snapX();
+        ImGui::SetCursorPosX(px(ImGui::GetCursorPosX()));
         if (ImGui::Checkbox("深色主题", &g_darkTheme)) ApplyTheme();
         // 「替换原文」会改跨页共享的字体对象，单独一行给足说明，默认不勾。
-        ImGui::SetCursorPosX(rowX);
+        newRow();
         ImGui::Checkbox("用 OCR 文本替换原文", &g_maskOriginal);
         ImGui::SameLine(0.0f, 6.0f * s);
-        snapX();
+        ImGui::SetCursorPosX(px(ImGui::GetCursorPosX()));
         ImGui::TextDisabled("(?)");
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip(
