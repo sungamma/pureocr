@@ -8,6 +8,8 @@
     onnxruntime.dll
     models\*.onnx        PP-OCR 模型
     使用说明.txt
+    LICENSE              AGPL-3.0 全文
+    THIRD_PARTY_NOTICES.md  第三方组件与模型许可
     run-cli.ps1          命令行示例
 
 .EXAMPLE
@@ -55,6 +57,13 @@ New-Item -ItemType Directory -Path $pkgDir -Force | Out-Null
 
 Copy-Item -LiteralPath $exe -Destination $pkgDir
 if (Test-Path -LiteralPath $ortDll) { Copy-Item -LiteralPath $ortDll -Destination $pkgDir }
+
+# ---- 许可与第三方声明：AGPL-3.0 分发必须随包附带 ----
+foreach ($name in @('LICENSE', 'THIRD_PARTY_NOTICES.md')) {
+    $src = Join-Path $PSScriptRoot "..\$name"
+    if (-not (Test-Path -LiteralPath $src)) { throw "找不到 $src：AGPL-3.0 分发必须随包附带许可文件" }
+    Copy-Item -LiteralPath $src -Destination $pkgDir
+}
 # ---- 模型：默认只带字典和清单，onnx 由首次运行时的下载向导 / --fetch-models 获取 ----
 $modelsOut = Join-Path $pkgDir 'models'
 New-Item -ItemType Directory -Path $modelsOut -Force | Out-Null
@@ -113,7 +122,8 @@ $readme = 'PDF OCR 工具（C++ 版）
 - 模型都在 models\ 下；移动版与服务器版共用 ppocrv5_dict.txt
 - 断点续跑：同目录生成 *_ocrcache.tsv；整篇跑完自动删除（中途挂掉才会留着），
   改 DPI / 模型 / 合并阈值会自动失效重建
-- 只支持 Windows 10/11 x64，不需要显卡（ONNX Runtime CPU）'
+- 只支持 Windows 10/11 x64，不需要显卡（ONNX Runtime CPU）
+- 许可：AGPL-3.0（见 LICENSE / THIRD_PARTY_NOTICES.md），随包附带完整许可文本'
 Set-Content -LiteralPath (Join-Path $pkgDir '使用说明.txt') -Value $readme -Encoding UTF8
 
 $runCli = 'param(

@@ -11,8 +11,24 @@ cmake-build-*/
 *.lib
 *.exp
 
-# 第三方依赖（体积大，不入库；模型已随仓库提供，见 ocr-gui/models）
-third_party/
+# 第三方依赖：只入库 ONNX Runtime 的构建必需文件（MIT，允许再分发）
+# MuPDF 是 AGPL-3.0，且预编译 .lib 有 500+ MB，不入库，用 tools/fetch_deps.ps1 下载
+# GLFW / Dear ImGui 由 CMake FetchContent 在构建时拉取
+third_party/*
+!third_party/onnxruntime-win-x64-1.20.1/
+!third_party/onnxruntime-win-x64-1.20.1/include/
+!third_party/onnxruntime-win-x64-1.20.1/include/**
+!third_party/onnxruntime-win-x64-1.20.1/lib/
+!third_party/onnxruntime-win-x64-1.20.1/lib/onnxruntime.dll
+!third_party/onnxruntime-win-x64-1.20.1/lib/onnxruntime.lib
+!third_party/onnxruntime-win-x64-1.20.1/LICENSE
+!third_party/onnxruntime-win-x64-1.20.1/ThirdPartyNotices.txt
+!third_party/onnxruntime-win-x64-1.20.1/README.md
+!third_party/onnxruntime-win-x64-1.20.1/VERSION_NUMBER
+!third_party/onnxruntime-win-x64-1.20.1/GIT_COMMIT_ID
+
+# 模型文件（onnx）不入库：Apache-2.0、约 212 MB，首次运行或 --fetch-models 下载
+ocr-gui/models/*.onnx
 
 # IDE
 .vs/

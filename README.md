@@ -94,7 +94,7 @@ python ocr-gui/tools/compare_page.py "样本.pdf" 5
 
 ### 1. 编译 MuPDF（只需一次）
 
-`third_party/` 已被 gitignore，需要自己构建；仓库里不放二进制。
+`third_party/` 里的 MuPDF 静态库约 550 MB，不入库；用 `pwsh -NoProfile -File ocr-gui\tools\fetch_deps.ps1` 自动下载并编译（ONNX Runtime 的 MIT 头文件/导入库已随仓库提供）。
 
 1. 下载源码：https://mupdf.com/downloads/archive/mupdf-1.25.0-source.tar.gz
 2. 用 VS 自带 sln 编静态库（要用 v143 覆盖它的 v142）：
