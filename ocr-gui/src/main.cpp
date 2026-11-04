@@ -6,6 +6,7 @@
 #include <windows.h>
 #include <commdlg.h>
 #include <shellapi.h>
+#include <shlobj.h>
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
@@ -57,10 +58,10 @@ std::atomic<int> g_donePages{0};
 std::atomic<int> g_totalPages{0};
 std::string g_result;   // 完成后的结果摘要
 std::thread g_worker;
-float g_minScore = 0.5f;
+float g_minScore = 0.55f;
 float g_reviewScore = 0.75f;
 double g_lastDpi = 300.0;
-int g_threads = 4;
+int g_threads = 2;
 int g_dpi = 300;
 bool g_switchToPreview = false;
 #ifdef OCRGUI_SELFTEST
@@ -78,6 +79,9 @@ bool g_mergeRow = true;   // 合并同一行的碎片
 bool g_maskOriginal = false;  // 用 OCR 文本替换原文（屏蔽原文字体）；默认关
 bool g_darkTheme = true;  // 深色主题
 std::string g_fixCsv;     // 复核 CSV（回灌用）
+bool g_batchMode = false; // 输入是目录：批量处理该目录下的 PDF
+bool g_recurse = false;   // 批量模式：含子目录
+bool g_overwrite = false; // 批量模式：覆盖已存在的 <原名>_OCR.pdf
 
 // ---- 模型在线下载（GUI）----
 util::DownloadHandle g_dl;
@@ -158,6 +162,79 @@ std::string DefaultOutputPath(const std::string& input) {
     return util::InsertBeforeExtension(input, "_OCR");
 }
 
+bool IsDirPath(const std::string& path) {
+    if (path.empty()) return false;
+    const DWORD attr = GetFileAttributesW(Utf8ToWide(path).c_str());
+    return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
+}
+
+/// 目录里待处理的 PDF（跳过 *_OCR.pdf 产物）；recurse=true 时含子目录。
+std::vector<std::string> CollectPdfs(const std::string& folder, bool recurse) {
+    std::vector<std::string> out;
+    std::error_code ec;
+    const std::filesystem::path root = std::filesystem::u8path(folder);
+    auto take = [&](const std::filesystem::path& p) {
+        if (!std::filesystem::is_regular_file(p, ec)) return;
+        std::string ext = p.extension().u8string();
+        for (char& c : ext) c = static_cast<char>(::tolower(static_cast<unsigned char>(c)));
+        if (ext != ".pdf") return;
+        std::string stem = p.stem().u8string();
+        std::string tail = stem.size() >= 4 ? stem.substr(stem.size() - 4) : std::string();
+        for (char& c : tail) c = static_cast<char>(::tolower(static_cast<unsigned char>(c)));
+        if (tail == "_ocr") return;  // 自己就是产物
+        out.push_back(p.u8string());
+    };
+    if (recurse) {
+        for (std::filesystem::recursive_directory_iterator it(
+                 root, std::filesystem::directory_options::skip_permission_denied, ec),
+             end;
+             !ec && it != end; it.increment(ec)) {
+            take(it->path());
+        }
+    } else {
+        for (std::filesystem::directory_iterator it(
+                 root, std::filesystem::directory_options::skip_permission_denied, ec),
+             end;
+             !ec && it != end; it.increment(ec)) {
+            take(it->path());
+        }
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+/// 侧栏显示用的计数：按 (目录, 是否递归) 记一份，避免每帧遍历目录
+int BatchPdfCount(const std::string& folder, bool recurse) {
+    static std::string key;
+    static int cached = -1;
+    const std::string k = folder + (recurse ? "#r" : "#f");
+    if (k != key) {
+        key = k;
+        cached = static_cast<int>(CollectPdfs(folder, recurse).size());
+    }
+    return cached < 0 ? 0 : cached;
+}
+
+/// 选择包含 PDF 的文件夹（批量模式）
+void OpenFolderDialog() {
+    BROWSEINFOW bi = {};
+    bi.hwndOwner = GetActiveWindow();
+    bi.lpszTitle = L"选择包含 PDF 的文件夹";
+    bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE | BIF_USENEWUI;
+    LPITEMIDLIST pidl = SHBrowseForFolderW(&bi);
+    if (!pidl) return;
+    wchar_t path[MAX_PATH] = L"";
+    if (SHGetPathFromIDListW(pidl, path)) {
+        g_pdfPath = WideToUtf8(path);
+        g_outPath.clear();  // 批量模式输出跟着每个源文件走
+        g_batchMode = true;
+        PushLog("选择文件夹：" + g_pdfPath);
+        const int n = BatchPdfCount(g_pdfPath, g_recurse);
+        PushLog("待处理 PDF：" + std::to_string(n) + " 个（已跳过 *_OCR.pdf）");
+    }
+    CoTaskMemFree(pidl);
+}
+
 bool FileExistsUtf8(const std::string& path) {
     return GetFileAttributesW(Utf8ToWide(path).c_str()) != INVALID_FILE_ATTRIBUTES;
 }
@@ -223,8 +300,12 @@ void LoadSettings() {
     const std::string in = str("input");
     if (!in.empty() && FileExistsUtf8(in)) {
         g_pdfPath = in;
-        const std::string out = str("output");
-        g_outPath = (!out.empty() && FileExistsUtf8(out)) ? out : DefaultOutputPath(in);
+        if (IsDirPath(in)) {
+            g_outPath.clear();  // 目录输入：输出跟着每个源文件走
+        } else {
+            const std::string out = str("output");
+            g_outPath = (!out.empty() && FileExistsUtf8(out)) ? out : DefaultOutputPath(in);
+        }
     }
     const std::string md = str("model_dir");
     if (!md.empty() && FileExistsUtf8(md)) g_modelDir = md;
@@ -234,6 +315,8 @@ void LoadSettings() {
     if (num("review_score") > 0) g_reviewScore = static_cast<float>(num("review_score"));
     if (kv.count("merge_row")) g_mergeRow = str("merge_row") != "0";
     if (kv.count("mask")) g_maskOriginal = str("mask") != "0";
+    if (kv.count("recurse")) g_recurse = str("recurse") != "0";
+    if (kv.count("overwrite")) g_overwrite = str("overwrite") != "0";
     if (kv.count("dark")) g_darkTheme = str("dark") != "0";
     if (kv.count("download_source")) g_dlSourceIdx = std::atoi(str("download_source").c_str());
     if (kv.count("pages")) g_pageSpec = str("pages");
@@ -263,6 +346,8 @@ void SaveSettings() {
     std::fprintf(f, "preset=%s\n", mp ? mp->id : "auto");
     std::fprintf(f, "merge_row=%d\n", g_mergeRow ? 1 : 0);
     std::fprintf(f, "mask=%d\n", g_maskOriginal ? 1 : 0);
+    std::fprintf(f, "recurse=%d\n", g_recurse ? 1 : 0);
+    std::fprintf(f, "overwrite=%d\n", g_overwrite ? 1 : 0);
     std::fprintf(f, "dark=%d\n", g_darkTheme ? 1 : 0);
     std::fprintf(f, "download_source=%d\n", g_dlSourceIdx);
     std::fprintf(f, "pages=%s\n", g_pageSpec.c_str());
@@ -364,6 +449,13 @@ void ApplyTheme() {
 void DropCallback(GLFWwindow*, int count, const char** paths) {
     for (int i = 0; i < count; ++i) {
         std::string path(paths[i] ? paths[i] : "");
+        if (path.empty()) continue;
+        if (IsDirPath(path)) {  // 拖文件夹 = 批量模式
+            g_pdfPath = path;
+            g_outPath.clear();
+            PushLog("拖入文件夹：" + path + "（批量模式）");
+            return;
+        }
         if (path.size() < 5) continue;
         std::string ext = path.substr(path.size() - 4);
         for (char& c : ext) c = static_cast<char>(::tolower(static_cast<unsigned char>(c)));
@@ -575,7 +667,22 @@ void StartOcr() {
 #endif
 
     const std::string pdf = g_pdfPath;
-    const std::string out = g_outPath.empty() ? DefaultOutputPath(pdf) : g_outPath;
+    const bool batch = IsDirPath(pdf);
+    g_batchMode = batch;
+    std::vector<std::string> batchFiles;
+    if (batch) {
+        batchFiles = CollectPdfs(pdf, g_recurse);
+        if (batchFiles.empty()) {
+            PushLog("目录里没有可处理的 PDF（已跳过 *_OCR.pdf）：" + pdf);
+            g_running = false;
+            return;
+        }
+        PushLog("批量模式：" + pdf + "，共 " + std::to_string(batchFiles.size()) + " 个 PDF" +
+                (g_recurse ? "（含子目录）" : "") +
+                "；输出为每个源文件同目录的 <原名>_OCR.pdf");
+    }
+    const std::string out = batch ? std::string()
+                                  : (g_outPath.empty() ? DefaultOutputPath(pdf) : g_outPath);
     std::vector<int> pages;
     if (!g_pageSpec.empty() && !pdf::ParsePageSpec(g_pageSpec, &pages)) {
         PushLog("页范围格式无效：" + g_pageSpec + "（例：1-10,15）");
@@ -591,55 +698,63 @@ void StartOcr() {
     SaveSettings();  // 每次开跑就落盘，异常退出也不丢参数
 
     g_worker = std::thread([=]() {
-        pdf::OcrRunOptions opt;
-        opt.inputPath = pdf;
-        opt.outputPath = out;
-        opt.modelDir = modelDir;
-        opt.fontPath = OcrFontPath();
-        opt.dpi = dpi;
-        opt.threads = threads;
-        opt.minScore = minScore;
-        opt.maskOriginal = g_maskOriginal;
-        opt.resume = g_resume || !g_fixCsv.empty();
-        const ocr::ModelPreset *mp = CurrentPreset();
-        opt.detModel = mp->det;
-        opt.recModel = mp->rec;
-        opt.clsModel = mp->cls;
-        opt.mergeGapRatio = g_mergeRow ? 0.8f : 0.0f;
-        opt.pages = pages;
-        opt.fixCsvPath = g_fixCsv;
+        // 单个文件跑一遍；summaryOut 带出结果摘要（失败时也写）
+        auto runOne = [&](const std::string &inFile, const std::string &outFile,
+                          std::string *summaryOut) -> bool {
+            pdf::OcrRunOptions opt;
+            opt.inputPath = inFile;
+            opt.outputPath = outFile;
+            opt.modelDir = modelDir;
+            opt.fontPath = OcrFontPath();
+            opt.dpi = dpi;
+            opt.threads = threads;
+            opt.minScore = minScore;
+            opt.maskOriginal = g_maskOriginal;
+            opt.resume = g_resume || !g_fixCsv.empty();
+            const ocr::ModelPreset *mp = CurrentPreset();
+            opt.detModel = mp->det;
+            opt.recModel = mp->rec;
+            opt.clsModel = mp->cls;
+            opt.mergeGapRatio = g_mergeRow ? 0.8f : 0.0f;
+            opt.pages = pages;
+            opt.fixCsvPath = g_fixCsv;
 
-        pdf::OcrRunStats stats;
-        std::string err;
-        PushLog("开始识别：" + pdf + "（" + pageSpecNote + "）");
-        PushLog("输出：" + out);
-        const bool ok = pdf::RunPdfOcr(
-            opt,
-            [](int done, int total, int page, int lines) {
-                g_totalPages = total;
-                g_donePages = done;
-                char buf[128];
-                std::snprintf(buf, sizeof(buf), "[%d/%d] 第 %d 页：%d 行", done, total, page + 1, lines);
-                PushLog(buf);
-            },
-            &stats, &err);
+            pdf::OcrRunStats stats;
+            std::string err;
+            PushLog("开始识别：" + inFile + "（" + pageSpecNote + "）");
+            PushLog("输出：" + outFile);
+            const bool ok = pdf::RunPdfOcr(
+                opt,
+                [](int done, int total, int page, int lines) {
+                    if (!g_batchMode) {  // 批量模式的进度按「第几个文件」算
+                        g_totalPages = total;
+                        g_donePages = done;
+                    }
+                    char buf[128];
+                    std::snprintf(buf, sizeof(buf), "[%d/%d] 第 %d 页：%d 行", done, total, page + 1,
+                                  lines);
+                    PushLog(buf);
+                },
+                &stats, &err);
 #ifdef OCRGUI_HAS_MUPDF
-        if (ok) {
-            std::lock_guard<std::mutex> lk(g_mutex);
-            g_pageLines = std::move(stats.pageLines);
-        }
+            if (ok && !g_batchMode) {
+                std::lock_guard<std::mutex> lk(g_mutex);
+                g_pageLines = std::move(stats.pageLines);
+            }
 #endif
-        std::string summary;
-        if (!ok) {
-            PushLog("失败：" + err);
-            summary = "失败：" + err;
-        } else {
+            if (!ok) {
+                PushLog("失败：" + err);
+                if (summaryOut) *summaryOut = "失败：" + err;
+                return false;
+            }
             char buf[256];
             if (stats.maskedFonts > 0) {
-                std::snprintf(buf, sizeof(buf), "完成：%d 页 / %d 行，替换原文（屏蔽字体 %d 个），用时 %.1f 秒",
+                std::snprintf(buf, sizeof(buf),
+                              "完成：%d 页 / %d 行，替换原文（屏蔽字体 %d 个），用时 %.1f 秒",
                               stats.pageCount, stats.lineCount, stats.maskedFonts, stats.seconds);
             } else {
-                std::snprintf(buf, sizeof(buf), "完成：%d 页 / %d 行（原文保留，仅叠加隐形文字层），用时 %.1f 秒",
+                std::snprintf(buf, sizeof(buf),
+                              "完成：%d 页 / %d 行（原文保留，仅叠加隐形文字层），用时 %.1f 秒",
                               stats.pageCount, stats.lineCount, stats.seconds);
             }
             PushLog(buf);
@@ -661,12 +776,62 @@ void StartOcr() {
                 std::snprintf(vbuf, sizeof(vbuf), "输出校验：%d 页内容完整", stats.verifiedPages);
                 PushLog(vbuf);
             }
-            summary = buf;
             if (stats.cachedPages > 0 || stats.ocrPages > 0) {
                 char cbuf[160];
                 std::snprintf(cbuf, sizeof(cbuf), "断点续跑：缓存命中 %d 页 / 新识别 %d 页",
                               stats.cachedPages, stats.ocrPages);
                 PushLog(cbuf);
+            }
+            if (stats.cacheRemoved) PushLog("断点续跑缓存已清理（整篇已完成）");
+            if (summaryOut) *summaryOut = buf;
+            return true;
+        };
+
+        std::string summary;
+        if (!batch) {
+            runOne(pdf, out, &summary);
+        } else {
+            const auto bt0 = std::chrono::steady_clock::now();
+            int okCount = 0, skipCount = 0, failCount = 0;
+            std::vector<std::string> failedNames;
+            g_totalPages = static_cast<int>(batchFiles.size());
+            g_donePages = 0;
+            for (size_t i = 0; i < batchFiles.size(); ++i) {
+                const std::string &inFile = batchFiles[i];
+                const std::string outFile = DefaultOutputPath(inFile);
+                const size_t slash = inFile.find_last_of("\\/");
+                const std::string name =
+                    slash == std::string::npos ? inFile : inFile.substr(slash + 1);
+                PushLog("[" + std::to_string(i + 1) + "/" + std::to_string(batchFiles.size()) + "] " +
+                        name);
+                if (!g_overwrite && FileExistsUtf8(outFile)) {
+                    PushLog("跳过 " + name + "：已有同名 _OCR 产物（勾「覆盖已有结果」可重做）");
+                    ++skipCount;
+                } else {
+                    std::string one;
+                    if (runOne(inFile, outFile, &one)) {
+                        ++okCount;
+                    } else {
+                        ++failCount;
+                        failedNames.push_back(name);
+                    }
+                }
+                g_donePages = static_cast<int>(i + 1);
+            }
+            const double secs =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - bt0).count();
+            char b2[256];
+            std::snprintf(b2, sizeof(b2),
+                          "批量完成：成功 %d 个 / 跳过 %d 个 / 失败 %d 个，用时 %.1f 秒", okCount,
+                          skipCount, failCount, secs);
+            summary = b2;
+            if (!failedNames.empty()) {
+                std::string f = "失败的文件：";
+                for (size_t i = 0; i < failedNames.size(); ++i) {
+                    if (i) f += "、";
+                    f += failedNames[i];
+                }
+                PushLog(f);
             }
         }
         {
@@ -818,7 +983,6 @@ void SectionLabel(const char* text) {
     ImGui::Dummy(ImVec2(0, 1.0f * g_uiScale));
 }
 
-void FieldLabel(const char* text) { ImGui::TextColored(MutedColor(), "%s", text); }
 
 /// 单行显示，超宽自动截断成 "…"
 void TextEllipsis(const char* text, ImVec4 color) {
@@ -851,8 +1015,11 @@ void DrawLogPane(float height) {
         if (g_log.empty() && !g_running) {
             ImGui::TextColored(MutedColor(), "日志会显示在这里");
         }
+        // 日志必须按宽度折行：以前超长一行直接被右边界裁掉，关键的报错尾段看不到
+        ImGui::PushTextWrapPos(0.0f);
         for (const auto& l : g_log) ImGui::TextUnformatted(l.c_str());
         if (g_running) ImGui::TextUnformatted("……");
+        ImGui::PopTextWrapPos();
         if (stick) ImGui::SetScrollHereY(1.0f);
     }
     ImGui::EndChild();
@@ -907,22 +1074,34 @@ void DrawSidebar() {
 
         // ---- 文件 ----
         SectionLabel("文件");
+        const bool batchInput = IsDirPath(g_pdfPath);
         {
-            const float saveW = 100.0f * s;
+            // 等宽平分：以前左边用 -w 撑满，右边只剩 108px，「选择文件夹…」被挤在角落
+            const float bgap = 8.0f * s;
+            const float bw = std::floor((ImGui::GetContentRegionAvail().x - bgap) * 0.5f);
             ImGui::BeginDisabled(running);
-            if (ImGui::Button("选择 PDF 文件...", ImVec2(-saveW - 8.0f * s, 40.0f * s))) {
-                OpenPdfDialog();
-            }
-            ImGui::SameLine(0.0f, 8.0f * s);
-            if (ImGui::Button("另存为…", ImVec2(saveW, 40.0f * s))) SavePdfDialog();
+            if (ImGui::Button("选择 PDF 文件…", ImVec2(bw, 40.0f * s))) OpenPdfDialog();
+            ImGui::SameLine(0.0f, bgap);
+            if (ImGui::Button("选择文件夹…", ImVec2(bw, 40.0f * s))) OpenFolderDialog();
             ImGui::EndDisabled();
         }
-        if (g_pdfPath.empty()) {
-            ImGui::TextColored(MutedColor(), "未选择（也可以把 PDF 直接拖进窗口）");
+        if (batchInput) {
+            TextEllipsis(("目录：" + g_pdfPath).c_str(), MutedColor());
+            ImGui::Checkbox("含子目录", &g_recurse);
+            ImGui::SameLine(0.0f, 16.0f * s);
+            ImGui::Checkbox("覆盖已有结果", &g_overwrite);
+            ImGui::TextColored(MutedColor(), "输出：每个源文件同目录的 <原名>_OCR.pdf");
         } else {
-            TextEllipsis(g_pdfPath.c_str(), MutedColor());
+            if (g_pdfPath.empty()) {
+                ImGui::TextColored(MutedColor(), "未选择（也可以把 PDF 或文件夹拖进窗口）");
+            } else {
+                TextEllipsis(g_pdfPath.c_str(), MutedColor());
+            }
+            if (!g_outPath.empty()) TextEllipsis(("→ " + g_outPath).c_str(), MutedColor());
+            ImGui::BeginDisabled(running);
+            if (ImGui::Button("另存为…", ImVec2(-FLT_MIN, 0.0f))) SavePdfDialog();
+            ImGui::EndDisabled();
         }
-        if (!g_outPath.empty()) TextEllipsis(("→ " + g_outPath).c_str(), MutedColor());
 
         // ---- 识别设置 ----
         SectionLabel("识别设置");
@@ -987,7 +1166,11 @@ void DrawSidebar() {
             g_pageSpec = pageBuf;
         }
 #ifdef OCRGUI_HAS_MUPDF
-        {
+        if (batchInput) {
+            const int n = BatchPdfCount(g_pdfPath, g_recurse);
+            ImGui::TextColored(MutedColor(), "共 %d 个 PDF%s，全部处理", n,
+                               g_recurse ? "（含子目录）" : "");
+        } else {
             const int pdfPages = PageCountForPath(g_pdfPath);
             std::vector<int> sel;
             const bool parsed = !g_pageSpec.empty() && pdf::ParsePageSpec(g_pageSpec, &sel);
@@ -1042,41 +1225,75 @@ void DrawSidebar() {
             }
         }
 
+        // 两列参数：列坐标自己算并取整。
+        // 用 BeginGroup + SameLine 时，控件宽度带小数（中文标签宽度不是整数）会累积出
+        // 半像素坐标，右列的文字就被画在 x.5 上，看着发虚、像乱码。
         const float gap = 14.0f * s;
-        const float halfW = (ImGui::GetContentRegionAvail().x - gap) * 0.5f;
+        const float rowX = std::floor(ImGui::GetCursorPosX());
+        const float colW = std::floor((ImGui::GetContentRegionAvail().x - gap) * 0.5f);
+        const float col2X = rowX + colW + gap;
+        auto snapX = []() { ImGui::SetCursorPosX(std::floor(ImGui::GetCursorPosX())); };
+        // 数值放标签行右端（跟标签同一行，天然对齐），滑块占满整列：
+        //   ① 滑块把手跟着值走，数字写在中线会被正好挡住（0.55 看起来像 0.5）
+        //   ② 数值贴着滑块右侧放，和滑块那个 30px 高的框做垂直居中总要差半像素，看着歪
+        auto valueRow = [&](const char* label, const char* value) {
+            const float x0 = std::floor(ImGui::GetCursorPosX());
+            ImGui::TextColored(MutedColor(), "%s", label);
+            const float tw = ImGui::CalcTextSize(value).x;
+            const float xr = std::floor(x0 + colW - tw);
+            if (xr > ImGui::GetCursorPosX() + 8.0f * s) {
+                ImGui::SameLine();
+                ImGui::SetCursorPosX(xr);
+                ImGui::TextUnformatted(value);
+            }
+        };
+        auto numCell = [&](const char* label, const char* id, int* v, int lo, int hi) {
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "%d", *v);
+            valueRow(label, buf);
+            ImGui::SetNextItemWidth(colW);
+            ImGui::SliderInt(id, v, lo, hi, "");
+        };
+        auto fracCell = [&](const char* label, const char* id, float* v, float lo, float hi) {
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "%.2f", static_cast<double>(*v));
+            valueRow(label, buf);
+            ImGui::SetNextItemWidth(colW);
+            ImGui::SliderFloat(id, v, lo, hi, "", ImGuiSliderFlags_AlwaysClamp);
+        };
+
+        // 用 BeginGroup/EndGroup 把「标签 + 滑块 + 数值」包成一格，
+        // SameLine 才会把右列对齐到本行行首（直接 SameLine 会接在滑块那一行上，
+        // 右列整体掉半行）。列宽、列坐标都是整数，避免文字画在半像素上发虚。
+        ImGui::BeginGroup();
+        numCell("线程数", "##threads", &g_threads, 1, 16);
+        ImGui::EndGroup();
+        ImGui::SameLine(col2X);
+        ImGui::BeginGroup();
+        numCell("渲染 DPI", "##dpi", &g_dpi, 150, 400);
+        ImGui::EndGroup();
 
         ImGui::BeginGroup();
-        FieldLabel("线程数");
-        ImGui::SetNextItemWidth(halfW);
-        ImGui::SliderInt("##threads", &g_threads, 1, 16);
+        fracCell("最低置信度", "##minscore", &g_minScore, 0.10f, 0.90f);
         ImGui::EndGroup();
-        ImGui::SameLine(0.0f, gap);
+        ImGui::SameLine(col2X);
         ImGui::BeginGroup();
-        FieldLabel("渲染 DPI");
-        ImGui::SetNextItemWidth(halfW);
-        ImGui::SliderInt("##dpi", &g_dpi, 150, 400);
+        fracCell("复核阈值", "##reviewscore", &g_reviewScore, 0.50f, 0.95f);
         ImGui::EndGroup();
 
-        ImGui::BeginGroup();
-        FieldLabel("最低置信度");
-        ImGui::SetNextItemWidth(halfW);
-        ImGui::SliderFloat("##minscore", &g_minScore, 0.10f, 0.90f, "%.2f");
-        ImGui::EndGroup();
-        ImGui::SameLine(0.0f, gap);
-        ImGui::BeginGroup();
-        FieldLabel("复核阈值");
-        ImGui::SetNextItemWidth(halfW);
-        ImGui::SliderFloat("##reviewscore", &g_reviewScore, 0.50f, 0.95f, "%.2f");
-        ImGui::EndGroup();
-
+        ImGui::SetCursorPosX(rowX);
         ImGui::Checkbox("断点续跑", &g_resume);
         ImGui::SameLine(0.0f, 16.0f * s);
+        snapX();
         ImGui::Checkbox("合并同行碎片", &g_mergeRow);
         ImGui::SameLine(0.0f, 16.0f * s);
+        snapX();
         if (ImGui::Checkbox("深色主题", &g_darkTheme)) ApplyTheme();
         // 「替换原文」会改跨页共享的字体对象，单独一行给足说明，默认不勾。
+        ImGui::SetCursorPosX(rowX);
         ImGui::Checkbox("用 OCR 文本替换原文", &g_maskOriginal);
         ImGui::SameLine(0.0f, 6.0f * s);
+        snapX();
         ImGui::TextDisabled("(?)");
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip(
@@ -1120,7 +1337,12 @@ void DrawSidebar() {
                                   : ImVec4(0.35f, 0.72f, 0.45f, 1.0f),
                            "%s", resultText.c_str());
         ImGui::PopTextWrapPos();
-        if (!g_outPath.empty()) {
+        if (IsDirPath(g_pdfPath)) {
+            if (ImGui::Button("打开输入目录", ImVec2(-FLT_MIN, 32.0f * s)) && !g_pdfPath.empty()) {
+                ShellExecuteW(nullptr, L"open", Utf8ToWide(g_pdfPath).c_str(), nullptr, nullptr,
+                              SW_SHOWNORMAL);
+            }
+        } else if (!g_outPath.empty()) {
             const float bw = (ImGui::GetContentRegionAvail().x - 2.0f * 8.0f * s) / 3.0f;
             if (ImGui::Button("打开目录", ImVec2(bw, 32.0f * s))) OpenOutputFolder();
             ImGui::SameLine(0.0f, 8.0f * s);
@@ -1247,6 +1469,17 @@ void DrawStage() {
         return;
     }
 
+    if (IsDirPath(g_pdfPath)) {
+        ImGui::Dummy(ImVec2(0, 40.0f * s));
+        if (g_fontTitle) ImGui::PushFont(g_fontTitle);
+        CenterText("批量模式", MutedColor());
+        if (g_fontTitle) ImGui::PopFont();
+        ImGui::Dummy(ImVec2(0, 8.0f * s));
+        CenterText("识别结果写入每个源文件同目录的 <原名>_OCR.pdf", MutedColor());
+        CenterText("进度、逐文件结果看左侧日志", MutedColor());
+        return;
+    }
+
     const bool outReady = g_done && !g_outPath.empty() &&
                           std::filesystem::exists(std::filesystem::u8path(g_outPath));
     const std::string target = outReady ? g_outPath : g_pdfPath;
@@ -1289,12 +1522,18 @@ void DrawStage() {
 
     {
         const char* status = outReady ? "OCR 产物" : "原文件";
-        const float tw = ImGui::CalcTextSize("● ").x + ImGui::CalcTextSize(status).x + 4.0f * s;
-        const float x = ImGui::GetWindowContentRegionMax().x - tw;
-        if (x > ImGui::GetCursorPosX() + 12.0f * s) {
-            ImGui::SameLine(x);
-            ImGui::TextColored(outReady ? ImVec4(0.30f, 0.68f, 0.42f, 1.0f) : MutedColor(), "● %s",
-                               status);
+        char sbuf[64];
+        std::snprintf(sbuf, sizeof(sbuf), "● %s", status);
+        // 用「当前游标 + 剩余宽度」算右边界，直接用内容区最大值会被窗口 padding 带偏，
+        // 结果整段文字画出可视区域，最后一个字被裁掉
+        const ImVec2 ts = ImGui::CalcTextSize(sbuf);
+        const float curX = ImGui::GetCursorScreenPos().x;
+        const float targetX = std::floor(curX + ImGui::GetContentRegionAvail().x - ts.x);
+        if (targetX > curX + 12.0f * s) {
+            ImGui::SameLine();
+            ImGui::SetCursorScreenPos(ImVec2(targetX, ImGui::GetCursorScreenPos().y));
+            ImGui::TextColored(outReady ? ImVec4(0.30f, 0.68f, 0.42f, 1.0f) : MutedColor(), "%s",
+                               sbuf);
         }
     }
 
@@ -1493,8 +1732,19 @@ int RunGui() {
     {
         ImFontGlyphRangesBuilder builder;
         builder.AddRanges(io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
-        builder.AddText("→←↑↓●○◆◇✔✓✕✗×·±°≈≤≥…—–");
+        // 常用符号整段打包（箭头 / 几何图形 / 杂项符号），以后文案里加箭头、星号也不会缺字
+        static const ImWchar symbolRanges[] = {
+            0x2190, 0x21FF,  // ← ↑ → ↓ 等箭头
+            0x25A0, 0x25FF,  // ● ○ ◆ ◇ ■ □ ▲ 等几何图形
+            0x2600, 0x27BF,  // ★ ☆ ✔ ✓ ✕ ✗ 等杂项符号
+            0
+        };
+        builder.AddRanges(symbolRanges);
+        builder.AddText("×·±°≈≤≥…—–");
+        // 这 16 个字在「常用 2500 字」表之外，漏了会渲染成方框（看着就是乱码）：
+        // 屏(屏蔽) 崩/溃(崩溃) 嵌(嵌入) 帧(帧) 楷 赋 轴 辑 逻 韩 馈 剔 兜 缀 桩
         builder.AddText("阈渲噪伽");
+        builder.AddText("屏崩溃嵌帧楷赋轴辑逻韩馈剔兜缀桩");
         builder.BuildRanges(&glyphRanges);
     }
     const ImWchar* ranges = glyphRanges.Data;
@@ -1632,11 +1882,22 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         args.reserve(argc);
         for (int i = 0; i < argc; ++i) args.push_back(WideToUtf8(wargv[i]));
         LocalFree(wargv);
-        if (!AttachConsole(ATTACH_PARENT_PROCESS)) AllocConsole();
-        FILE* f = nullptr;
-        freopen_s(&f, "CONOUT$", "w", stdout);
-        freopen_s(&f, "CONOUT$", "w", stderr);
-        SetConsoleOutputCP(CP_UTF8);
+        // 只有「没有可用的标准输出句柄」或「输出到控制台」时才需要挂控制台；
+        // 若被父进程重定向到文件/管道（>log.txt、| more），必须保留继承来的句柄，
+        // 一旦 freopen 到 CONOUT$，重定向就全丢了（批量模式没法记日志）。
+        auto needsConsole = [](HANDLE h) {
+            if (h == nullptr || h == INVALID_HANDLE_VALUE) return true;
+            return GetFileType(h) == FILE_TYPE_CHAR;
+        };
+        const bool coutConsole = needsConsole(GetStdHandle(STD_OUTPUT_HANDLE));
+        const bool cerrConsole = needsConsole(GetStdHandle(STD_ERROR_HANDLE));
+        if (coutConsole || cerrConsole) {
+            if (!AttachConsole(ATTACH_PARENT_PROCESS)) AllocConsole();
+            FILE* f = nullptr;
+            if (coutConsole) freopen_s(&f, "CONOUT$", "w", stdout);
+            if (cerrConsole) freopen_s(&f, "CONOUT$", "w", stderr);
+            SetConsoleOutputCP(CP_UTF8);
+        }
         std::vector<char*> argv;
         argv.reserve(args.size());
         for (auto& a : args) argv.push_back(const_cast<char*>(a.c_str()));

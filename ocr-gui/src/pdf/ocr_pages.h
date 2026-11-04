@@ -27,6 +27,8 @@ struct OcrRunOptions {
     // 屏蔽原文字体（复制/搜索只剩 OCR 文本）。默认关闭：这是全文最容易误伤的一步，
     // 它改的是跨页共享的字体对象；只有用户明确要求「用 OCR 文本替换原文」时才开。
     bool maskOriginal = false;  // 屏蔽原文字层，复制文字只输出 OCR 结果
+    // 断点续跑缓存只在中断后有 value；整篇跑完默认删除，加 keepCache 才留（复核回灌流程要留）
+    bool keepCache = false;
     std::vector<int> pages;    // 0 基页号；空表示全部
 };
 
@@ -55,6 +57,7 @@ struct OcrRunStats {
     bool maskSkippedPartial = false;  // 开了屏蔽但只处理部分页，被自动跳过
     int stackedPages = 0;   // 原页本就可复制、成品里原文与 OCR 文本并存的页数
     int verifiedPages = 0;   // 成品自检通过（内容完整）的页数
+    bool cacheRemoved = false;  // 整篇完成后已删除断点续跑缓存
     std::string verifyNote;   // 自检没能执行的原因（非空时说明这次没验证上）   // 复核 CSV 回填的行数  // 低于 reviewScore 的行数
 };
 

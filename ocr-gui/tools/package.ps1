@@ -80,8 +80,9 @@ $readme = 'PDF OCR 工具（C++ 版）
 
 双击 ocrgui.exe 打开界面（左边是参数，右边常驻页面预览）：
   1) 点「选择 PDF 文件…」；输出默认落在同目录「原名_OCR.pdf」，可用「另存为…」改
+     要整批处理：点「选择文件夹…」（或把文件夹拖进窗口），可勾「含子目录」「覆盖已有结果」
   2) 「页范围」留空 = 全部；也可以写 1-10,15（框下面会显示共几页、这次处理几页）
-  3) 「线程数」默认 4（机器卡就 2~3），「渲染 DPI」默认 300，最低置信度默认 0.55
+  3) 「线程数」默认 2（机器快可调 4），「渲染 DPI」默认 300，最低置信度默认 0.55
   4) 「识别模型」可选：
        v5   移动版，默认，快且准（10 页 / 4 线程约 44 秒）
        v5s  服务器版，最准但慢 4~7 倍（10 页约 290 秒），适合定稿
@@ -101,22 +102,31 @@ $readme = 'PDF OCR 工具（C++ 版）
   .\run-cli.ps1 -Pdf "D:\某文件.pdf" -Preset v5s
   .\run-cli.ps1 -Pdf "D:\某文件.pdf" -Csv 复核.csv -ReviewScore 0.75
   .\run-cli.ps1 -Pdf "D:\某文件.pdf" -FixCsv 复核_已改.csv -Resume
+  .\run-cli.ps1 -Dir "D:\待处理" -Recurse            # 整目录（含子目录）批量
+  .\run-cli.ps1 -Dir "D:\待处理" -OutDir "D:\输出"   # 结果统一放另一个目录
 
 说明：
 - 输出 PDF 保留原始页面（渲染层不动），只叠加不可见的 OCR 文字层，可直接框选复制
-- 默认把原文（本来就损坏的）当图片处理并盖白，避免复制出乱码；-NoMask 可关闭
+- 默认不动原文字体（最稳）；要盖住原文字才用「用 OCR 文本替换原文」或 --mask
+- 批量：每个 PDF 输出「原名_OCR.pdf」；以 _OCR.pdf 结尾的文件、以及已经存在
+  「原名_OCR.pdf」的原文件都会自动跳过，可以放心反复跑
 - 模型都在 models\ 下；移动版与服务器版共用 ppocrv5_dict.txt
-- 断点续跑：同目录生成 *.ocrcache.tsv；改 DPI / 模型 / 合并阈值会自动失效重建
+- 断点续跑：同目录生成 *_ocrcache.tsv；整篇跑完自动删除（中途挂掉才会留着），
+  改 DPI / 模型 / 合并阈值会自动失效重建
 - 只支持 Windows 10/11 x64，不需要显卡（ONNX Runtime CPU）'
 Set-Content -LiteralPath (Join-Path $pkgDir '使用说明.txt') -Value $readme -Encoding UTF8
 
 $runCli = 'param(
-    [Parameter(Mandatory = $true)][string]$Pdf,
+    [string]$Pdf,
+    [string]$Dir,
+    [string]$OutDir,
+    [switch]$Recurse,
+    [switch]$Overwrite,
     [string]$OutPdf,
     [string]$Pages,
-    [int]$Threads = 4,
+    [int]$Threads = 2,
     [int]$Dpi = 300,
-    [double]$MinScore = 0.5,
+    [double]$MinScore = 0.55,
     [string]$Preset = "v5",
     [string]$Csv,
     [double]$ReviewScore = 0.75,
@@ -127,10 +137,20 @@ $runCli = 'param(
 )
 $exe = Join-Path $PSScriptRoot "ocrgui.exe"
 $modelDir = Join-Path $PSScriptRoot "models"
-$argList = @("--pdf", $Pdf, "--model-dir", $modelDir, "--threads", $Threads,
-             "--dpi", $Dpi, "--min-score", $MinScore, "--merge-gap", $MergeGap)
+if (-not $Pdf -and -not $Dir) { throw "请用 -Pdf <文件> 或 -Dir <目录> 指定输入" }
+$batch = [bool]$Dir
+if ($batch) {
+    $argList = @("--dir", $Dir, "--model-dir", $modelDir, "--threads", $Threads,
+                 "--dpi", $Dpi, "--min-score", $MinScore, "--merge-gap", $MergeGap)
+    if ($OutDir) { $argList += @("--out-dir", $OutDir) }
+    if ($Recurse) { $argList += "--recurse" }
+    if ($Overwrite) { $argList += "--overwrite" }
+} else {
+    $argList = @("--pdf", $Pdf, "--model-dir", $modelDir, "--threads", $Threads,
+                 "--dpi", $Dpi, "--min-score", $MinScore, "--merge-gap", $MergeGap)
+}
 if ($Preset) { $argList += @("--preset", $Preset) }
-if ($OutPdf) { $argList += @("--out-pdf", $OutPdf) }
+if ($OutPdf -and -not $batch) { $argList += @("--out-pdf", $OutPdf) }
 if ($Pages) { $argList += @("--pages", $Pages) }
 if ($Csv) { $argList += @("--csv", $Csv, "--review-score", $ReviewScore) }
 if ($FixCsv) { $argList += @("--fix-csv", $FixCsv) }

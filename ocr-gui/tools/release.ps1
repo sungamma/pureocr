@@ -72,6 +72,17 @@ if ([string]::IsNullOrWhiteSpace($OutDir)) { $OutDir = Join-Path $srcDir 'dist' 
 $BuildDir = [IO.Path]::GetFullPath($BuildDir)   # 去掉 .. 之类的相对片段，便于显示和删除
 $OutDir   = [IO.Path]::GetFullPath($OutDir)
 
+# 云同步目录里 MSVC 会莫名其妙失败：C1090（写 PDB）、写 tlog 失败（MSB6003）、甚至 CMake 的
+# 编译器探针都跑不起来，而且常常是「配置能过、编译到一半才挂」。与其失败后重试，不如一开始
+# 就把构建目录挪到系统临时目录。
+$tempRoot = [IO.Path]::GetFullPath($env:TEMP).TrimEnd('\\')
+$cloudHint = $BuildDir -match '(?i)\\(Dropbox|OneDrive|GoogleDrive|iCloudDrive|Nutstore|坚果云|百度网盘)\\'
+if (-not $BuildDir.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase) -and $cloudHint) {
+    $tempBuild = [IO.Path]::GetFullPath((Join-Path $env:TEMP 'ocrgui-build'))
+    Write-WarnMsg "构建目录在云同步盘里，MSVC 容易报 C1090/写 tlog 失败；改用 $tempBuild"
+    $BuildDir = $tempBuild
+}
+
 Write-Step '工程信息'
 Write-Detail "源码目录 : $srcDir"
 Write-Detail "构建目录 : $BuildDir"
@@ -232,12 +243,16 @@ if (-not $SkipBuild) {
     $cfgOut = & $cmakeExe @cmakeArgs 2>&1
     $cfgExit = $LASTEXITCODE
     $cfgOut | ForEach-Object { Write-Host "    $_" }
-    if ($cfgExit -ne 0 -and (($cfgOut | Out-String) -match 'C1090|PDB API')) {
-        # 云同步（Dropbox / OneDrive）的过滤驱动会挡住 mspdbsrv 的跨进程 PDB 写入，
-        # 报 "error C1090: PDB API 调用失败"。这时自动换到系统临时目录重新配置一次，
-        # 发布流程照常走完，最后的临时目录也照样删掉。
+    # 云同步（Dropbox / OneDrive）的过滤驱动会挡住 mspdbsrv 的跨进程 PDB 写入：轻则报
+    # "error C1090: PDB API 调用失败"，重则 CMake 的编译器探针直接失败（探针跑不起来）。
+    # 两种情况都自动换到系统临时目录重配一次，发布流程照常走完。
+    $cfgText = $cfgOut | Out-String
+    $tempRoot = [IO.Path]::GetFullPath($env:TEMP).TrimEnd('\\')
+    $inTemp = $BuildDir.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase)
+    if ($cfgExit -ne 0 -and -not $inTemp -and
+        $cfgText -match 'C1090|PDB API|not able to compile a simple test program|CMakeTestCXXCompiler') {
         $fallbackBuild = Join-Path $env:TEMP 'ocrgui-build'
-        Write-WarnMsg "编译器写 PDB 失败（C1090），通常是 Dropbox/OneDrive 同步过滤驱动挡住了。改用临时构建目录：$fallbackBuild"
+        Write-WarnMsg "构建目录在同步盘里导致 MSVC 报错（PDB/编译器探针），改用临时构建目录：$fallbackBuild"
         $fallbackBuild = [IO.Path]::GetFullPath($fallbackBuild)
         if (Test-Path -LiteralPath $fallbackBuild) { Remove-DirectoryWithRetry $fallbackBuild | Out-Null }
         $BuildDir = $fallbackBuild

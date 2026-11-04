@@ -3,7 +3,9 @@
 
 #include "util/path_util.h"
 
+#include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -82,7 +84,7 @@ int RunPdfCli(const std::string &pdfPath, const std::string &outPdf, const std::
               float reviewScore,
               bool resume, const std::string &cachePath, const std::string &detModel,
               const std::string &recModel, const std::string &clsModel, float mergeGap,
-              const std::string &fixCsv) {
+              const std::string &fixCsv, bool keepCache) {
 #ifdef OCRGUI_HAS_MUPDF
     namespace fs = std::filesystem;
     if (fontPath.empty()) {
@@ -105,7 +107,7 @@ int RunPdfCli(const std::string &pdfPath, const std::string &outPdf, const std::
     opt.modelDir = modelDir;
     opt.fontPath = fontPath;
     opt.dpi = dpi;
-    opt.threads = threads > 0 ? threads : 4;
+    opt.threads = threads > 0 ? threads : 2;
     opt.minScore = minScore;
     opt.reviewScore = reviewScore;
     opt.csvPath = csvPath;
@@ -117,6 +119,7 @@ int RunPdfCli(const std::string &pdfPath, const std::string &outPdf, const std::
     opt.clsModel = clsModel;
     opt.mergeGapRatio = mergeGap;
     opt.fixCsvPath = fixCsv;
+    opt.keepCache = keepCache;
     if (!pageSpec.empty() && !pdf::ParsePageSpec(pageSpec, &opt.pages)) {
         std::fprintf(stderr, "页码参数无效: %s\n", pageSpec.c_str());
         return 2;
@@ -177,6 +180,9 @@ int RunPdfCli(const std::string &pdfPath, const std::string &outPdf, const std::
                     stats.maskSeconds, stats.saveSeconds);
     } else {
         std::printf("用时：%.1f 秒（保存 %.1f 秒）\n", stats.seconds, stats.saveSeconds);
+    }
+    if (stats.cacheRemoved) {
+        std::printf("断点续跑缓存已清理（下次对同一输出重跑会重新识别）\n");
     }
     std::printf("待复核：%d 行（置信度 < %.2f）\n", stats.reviewLines, opt.reviewScore);
     if (!csvPath.empty()) std::printf("复核 CSV：%s\n", csvPath.c_str());
@@ -272,12 +278,139 @@ int RunFetchModels(const std::string &modelDirIn, const std::string &presetId,
     std::printf("下载完成，模型目录：%s\n", modelDir.c_str());
     return 0;
 }
+/// 批量模式：把目录下所有 PDF 转成可搜索 PDF（<原名>_OCR.pdf）。
+/// 跳过规则（避免反复跑）：文件名本身以 _OCR 结尾的；已有 <原名>_OCR.pdf 的原文件
+/// （输出目录或源目录里存在都算）。--overwrite 可强制重做。
+int RunPdfBatchCli(const std::string &folderIn, const std::string &outDirIn,
+                   const std::string &modelDir, const std::string &fontPath, double dpi, int threads,
+                   float minScore, const std::string &pageSpec, bool maskOriginal,
+                   const std::string &csvPath, float reviewScore, bool resume,
+                   const std::string &cachePath, const std::string &detModel,
+                   const std::string &recModel, const std::string &clsModel, float mergeGap,
+                   const std::string &fixCsv, bool recurse, bool overwrite, bool keepCache) {
+#ifdef OCRGUI_HAS_MUPDF
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path folder = fs::u8path(folderIn);
+    if (!fs::is_directory(folder, ec)) {
+        std::fprintf(stderr, "目录不存在：%s\n", folderIn.c_str());
+        return 2;
+    }
+    fs::path outRoot;
+    if (!outDirIn.empty()) {
+        outRoot = fs::u8path(outDirIn);
+        fs::create_directories(outRoot, ec);
+    }
+
+    auto IsOcrOutput = [](const std::string &stem) {
+        if (stem.size() < 4) return false;
+        std::string tail = stem.substr(stem.size() - 4);
+        for (char &c : tail) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return tail == "_ocr";
+    };
+    std::vector<fs::path> files;
+    auto Collect = [&](const fs::path &p) {
+        if (!fs::is_regular_file(p, ec)) return;
+        std::string ext = p.extension().u8string();
+        for (char &c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (ext != ".pdf") return;
+        if (IsOcrOutput(p.stem().u8string())) return;  // 产物自己，不处理
+        files.push_back(p);
+    };
+    if (recurse) {
+        fs::recursive_directory_iterator it(folder, fs::directory_options::skip_permission_denied, ec), end;
+        while (!ec && it != end) {
+            Collect(it->path());
+            it.increment(ec);
+        }
+    } else {
+        fs::directory_iterator it(folder, fs::directory_options::skip_permission_denied, ec), end;
+        while (!ec && it != end) {
+            Collect(it->path());
+            it.increment(ec);
+        }
+    }
+    std::sort(files.begin(), files.end(),
+              [](const fs::path &a, const fs::path &b) { return a.u8string() < b.u8string(); });
+
+    std::printf("批量模式：%s（%zu 个 PDF%s）\n", folderIn.c_str(), files.size(),
+                recurse ? "，已递归子目录" : "");
+    std::printf("参数：%d 线程 / %g dpi / 最低置信度 %.2f / 同行合并阈值 %.2f\n", threads, dpi,
+                static_cast<double>(minScore), static_cast<double>(mergeGap));
+    if (files.empty()) {
+        std::printf("没有可处理的 PDF（已跳过 *_OCR.pdf）。\n");
+        return 0;
+    }
+    std::fflush(stdout);
+
+    const auto t0 = std::chrono::steady_clock::now();
+    int okCount = 0, skipCount = 0, failCount = 0;
+    std::vector<std::string> failed, skipped;
+    for (size_t i = 0; i < files.size(); ++i) {
+        const fs::path &f = files[i];
+        const std::string base = f.stem().u8string();
+        const fs::path outPath = (outRoot.empty() ? f.parent_path() : outRoot) /
+                                 fs::u8path(base + "_OCR.pdf");
+        std::printf("\n[%zu/%zu] %s\n", i + 1, files.size(), f.filename().u8string().c_str());
+        std::fflush(stdout);
+
+        if (!overwrite) {
+            std::string hit;
+            if (fs::exists(outPath, ec)) {
+                hit = outPath.filename().u8string();
+            } else {
+                const fs::path sibling = f.parent_path() / fs::u8path(base + "_OCR.pdf");
+                if (sibling != outPath && fs::exists(sibling, ec)) hit = sibling.filename().u8string();
+            }
+            if (!hit.empty()) {
+                std::printf("跳过：已有 %s（要重做加 --overwrite）\n", hit.c_str());
+                ++skipCount;
+                skipped.push_back(f.filename().u8string());
+                continue;
+            }
+        }
+        std::string csvForFile;
+        if (!csvPath.empty()) {
+            csvForFile = util::InsertBeforeExtension(outPath.u8string(), "_复核.csv");
+        }
+        const int rc = RunPdfCli(f.u8string(), outPath.u8string(), modelDir, fontPath, dpi, threads,
+                                 minScore, pageSpec, maskOriginal, csvForFile, reviewScore, resume,
+                                 cachePath, detModel, recModel, clsModel, mergeGap, fixCsv,
+                                 keepCache);
+        if (rc == 0) {
+            ++okCount;
+        } else {
+            ++failCount;
+            failed.push_back(f.filename().u8string());
+        }
+    }
+
+    const double secs =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    std::printf("\n批量完成：成功 %d 个 / 跳过 %d 个 / 失败 %d 个，用时 %.1f 秒\n", okCount,
+                skipCount, failCount, secs);
+    if (!failed.empty()) {
+        std::printf("失败的：");
+        for (size_t i = 0; i < failed.size(); ++i) std::printf("%s%s", i ? "、" : "", failed[i].c_str());
+        std::printf("\n");
+        return 1;
+    }
+    return 0;
+#else
+    (void)folderIn; (void)outDirIn; (void)modelDir; (void)fontPath; (void)dpi; (void)threads;
+    (void)minScore; (void)pageSpec; (void)maskOriginal; (void)csvPath; (void)reviewScore;
+    (void)resume; (void)cachePath; (void)detModel; (void)recModel; (void)clsModel; (void)mergeGap;
+    (void)fixCsv; (void)recurse; (void)overwrite; (void)keepCache;
+    return 1;
+#endif
+}
+
 int RunCli(int argc, char **argv) {
     std::string imagePath, pdfPath, outPdf, modelDir, outPath, dumpDir, fontPath, pageSpec, logPath,
         csvPath;
-    float minScore = 0.5f;
+    float minScore = 0.55f;  // 默认置信度（配合 300dpi + 2 线程 + 合并 0.8 为推荐组合）
     float reviewScore = 0.75f;
-    int threads = 0;
+    int threads = 2;  // 默认 2 线程：少占 CPU，笔记本上不拖慢别的活
     double dpi = 300.0;
     // 默认只叠加隐形文本层（不动原文）；--mask 才屏蔽原文字体
     bool maskOriginal = false;
@@ -286,6 +419,11 @@ int RunCli(int argc, char **argv) {
     std::string preset, detModel, recModel, clsModel;
     float mergeGap = 0.8f;
     std::string fixCsv;
+    std::string dirPath;     // --dir：批量处理目录
+    std::string outDirPath;  // --out-dir：批量输出目录（默认与源文件同目录）
+    bool recurse = false;    // --recurse：含子目录
+    bool overwrite = false;  // --overwrite：已有 _OCR 产物也重做
+    bool keepCache = false;  // --keep-cache：跑完不删断点续跑缓存（复核回灌流程用）
     bool fetchModels = false;
     std::string source = "auto";
 
@@ -295,6 +433,16 @@ int RunCli(int argc, char **argv) {
             imagePath = argv[++i];
         } else if (a == "--pdf" && i + 1 < argc) {
             pdfPath = argv[++i];
+        } else if ((a == "--dir" || a == "-f") && i + 1 < argc) {
+            dirPath = argv[++i];
+        } else if (a == "--out-dir" && i + 1 < argc) {
+            outDirPath = argv[++i];
+        } else if (a == "--recurse" || a == "-r") {
+            recurse = true;
+        } else if (a == "--overwrite") {
+            overwrite = true;
+        } else if (a == "--keep-cache") {
+            keepCache = true;
         } else if (a == "--out-pdf" && i + 1 < argc) {
             outPdf = argv[++i];
         } else if (a == "--dpi" && i + 1 < argc) {
@@ -345,8 +493,13 @@ int RunCli(int argc, char **argv) {
             source = argv[++i];
         } else if (a == "--help" || a == "-h") {
             std::printf("用法:\n");
-            std::printf("  ocrgui --pdf <输入.pdf> [--out-pdf <输出.pdf>] [--dpi 300] [--threads 4]\n");
-            std::printf("         [--pages 1-10,15] [--font <ttf>] [--mask] [--min-score 0.5]\n");
+            std::printf("  ocrgui --pdf <输入.pdf> [--out-pdf <输出.pdf>] [--dpi 300] [--threads 2]\n");
+            std::printf("         [--pages 1-10,15] [--font <ttf>] [--mask] [--min-score 0.55]\n");
+            std::printf("         [--resume] 断点续跑（整篇跑完自动删缓存，--keep-cache 保留）\n");
+            std::printf("  ocrgui --pdf <目录>   （也可 --dir / -f 指定目录）\n");
+            std::printf("         [--out-dir <输出目录>] [--recurse|-r 含子目录] [--overwrite 重做已有结果]\n");
+            std::printf("         批量：目录下所有 PDF 转成 <原名>_OCR.pdf；已有的自动跳过\n");
+            std::printf("         （文件名以 _OCR 结尾的、或已经存在 <原名>_OCR.pdf 的原文件）\n");
             std::printf("         [--csv <复核.csv>] [--review-score 0.75]\n");
             std::printf("         [--model-dir <模型目录>] [--log <日志文件>]\n");
             std::printf("         [--resume] [--cache <缓存.tsv>]  断点续跑：已完成页跳过\n");
@@ -392,10 +545,25 @@ int RunCli(int argc, char **argv) {
         return RunFetchModels(modelDir, preset.empty() ? "v5" : preset, source);
     }
 
+    // 目录 -> 批量模式；单个文件 -> 原来的单文件流程
+    std::string batchDir = dirPath;
+    if (batchDir.empty() && !pdfPath.empty()) {
+        std::error_code ec;
+        if (std::filesystem::is_directory(std::filesystem::u8path(pdfPath), ec)) batchDir = pdfPath;
+    }
+    if (!batchDir.empty()) {
+        if (!outPdf.empty()) {
+            std::fprintf(stderr, "提示：批量模式下忽略 --out-pdf，用 --out-dir 指定输出目录\n");
+        }
+        return RunPdfBatchCli(batchDir, outDirPath, modelDir, fontPath, dpi, threads, minScore,
+                              pageSpec, maskOriginal, csvPath, reviewScore, resume, cachePath,
+                              detModel, recModel, clsModel, mergeGap, fixCsv, recurse, overwrite,
+                              keepCache);
+    }
     if (!pdfPath.empty()) {
         return RunPdfCli(pdfPath, outPdf, modelDir, fontPath, dpi, threads, minScore, pageSpec,
                          maskOriginal, csvPath, reviewScore, resume, cachePath, detModel,
-                         recModel, clsModel, mergeGap, fixCsv);
+                         recModel, clsModel, mergeGap, fixCsv, keepCache);
     }
 
     if (imagePath.empty()) {

@@ -106,6 +106,8 @@ target_link_libraries(ocrgui PRIVATE
   imgui_backend
   opengl32
   comdlg32
+  shell32
+  ole32
   winhttp
   bcrypt
   ${ORT_DIR}/lib/onnxruntime.lib

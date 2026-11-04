@@ -395,6 +395,14 @@ bool RunPdfOcr(const OcrRunOptions& opt, const OcrProgress& progress, OcrRunStat
 
     cache.Close();  // 缓存只是中间产物，完成后关闭
 
+    // 整篇跑完（且没有失败）就把断点续跑缓存删掉：它只在「中途挂掉」时有用，
+    // 留着只会越积越多。复核回灌 / 导出复核 CSV 时保留，因为下一步还要靠它命中缓存。
+    const bool cacheUsed = opt.resume && !cachePath.empty();
+    const bool keepForReview = !opt.fixCsvPath.empty() || !opt.csvPath.empty();
+    if (cacheUsed && !opt.keepCache && !keepForReview && fullDocument) {
+        if (DeleteFileW(ToWide(cachePath).c_str()) != 0 && stats) stats->cacheRemoved = true;
+    }
+
     if (!opt.csvPath.empty()) {
         if (!stats) {
             if (err) *err = "导出 CSV 需要 stats 输出";  // 内部调用约定
