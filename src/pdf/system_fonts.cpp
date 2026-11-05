@@ -2,14 +2,20 @@
 
 #include <cstring>
 #include <string>
+#include <cstdio>
 
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <strings.h>
+#endif
 
 #include "mupdf/fitz.h"
 
 namespace pdf {
 namespace {
 
+#ifdef _WIN32
 /// 把 C:\Windows\Fonts\xxx.ttf 组织成 UTF-8 路径（Windows 目录不一定在 C:）。
 std::string FontPath(const char* file) {
     wchar_t dir[MAX_PATH] = {};
@@ -63,6 +69,32 @@ bool HasPrefixNoCase(const char* s, const char* prefix) {
     const size_t n = std::strlen(prefix);
     return _strnicmp(s, prefix, n) == 0;
 }
+#else
+std::string FontPath(const char* file) {
+    static const char* kDirs[] = {"/usr/share/fonts/opentype/noto/",
+                                  "/usr/share/fonts/truetype/noto/",
+                                  "/usr/share/fonts/truetype/wqy/",
+                                  "/usr/share/fonts/truetype/dejavu/"};
+    for (const char* dir : kDirs) {
+        const std::string p = std::string(dir) + file;
+        if (FILE* f = std::fopen(p.c_str(), "rb")) {
+            std::fclose(f);
+            return p;
+        }
+    }
+    return std::string();
+}
+
+bool EqualsNoCase(const char* a, const char* b) {
+    if (!a || !b) return false;
+    return strcasecmp(a, b) == 0;
+}
+
+bool HasPrefixNoCase(const char* s, const char* prefix) {
+    if (!s || !prefix) return false;
+    return strncasecmp(s, prefix, std::strlen(prefix)) == 0;
+}
+#endif
 
 struct SimpleFont {
     const char* name;
@@ -72,6 +104,7 @@ struct SimpleFont {
     const char* boldItalic;
 };
 
+#ifdef _WIN32
 // 常见西文字体名 -> 系统字体文件。找不到就按 serif/sans 兜底。
 const SimpleFont kSimpleFonts[] = {
     {"arial", "arial.ttf", "arialbd.ttf", "ariali.ttf", "arialbi.ttf"},
@@ -94,6 +127,24 @@ const char* const kJapanese[] = {"YuGothM.ttc", "msgothic.ttc", "meiryo.ttc"};
 const char* const kJapaneseSerif[] = {"yumin.ttf", "msmincho.ttc", "YuMincho.ttc"};
 const char* const kKorean[] = {"malgun.ttf", "gulim.ttc", "batang.ttc"};
 const char* const kKoreanSerif[] = {"batang.ttc", "malgun.ttf"};
+#else
+// Linux：常见字体名映射到发行版里通常装的字体文件。
+const SimpleFont kSimpleFonts[] = {
+    {"arial", "DejaVuSans.ttf", "DejaVuSans-Bold.ttf", "DejaVuSans-Oblique.ttf", nullptr},
+    {"helvetica", "DejaVuSans.ttf", "DejaVuSans-Bold.ttf", "DejaVuSans-Oblique.ttf", nullptr},
+    {"times new roman", "DejaVuSerif.ttf", "DejaVuSerif-Bold.ttf", "DejaVuSerif-Italic.ttf", nullptr},
+    {"times", "DejaVuSerif.ttf", "DejaVuSerif-Bold.ttf", "DejaVuSerif-Italic.ttf", nullptr},
+    {"courier new", "DejaVuSansMono.ttf", "DejaVuSansMono-Bold.ttf", nullptr, nullptr},
+    {"courier", "DejaVuSansMono.ttf", "DejaVuSansMono-Bold.ttf", nullptr, nullptr},
+};
+
+const char* const kCjkSans[] = {"NotoSansCJK-Regular.ttc", "wqy-microhei.ttc", "NotoSansCJKsc-Regular.otf"};
+const char* const kCjkSerif[] = {"NotoSerifCJK-Regular.ttc", "NotoSansCJK-Regular.ttc"};
+const char* const kJapanese[] = {"NotoSansCJK-Regular.ttc", "NotoSansCJKjp-Regular.otf"};
+const char* const kJapaneseSerif[] = {"NotoSerifCJK-Regular.ttc"};
+const char* const kKorean[] = {"NotoSansCJK-Regular.ttc", "NotoSansCJKkr-Regular.otf"};
+const char* const kKoreanSerif[] = {"NotoSerifCJK-Regular.ttc"};
+#endif
 
 /// 普通字体名缺失时的钩子（例如 PDF 里写了 Arial 但没嵌入）。
 fz_font* LoadSystemFont(fz_context* ctx, const char* name, int bold, int italic,
@@ -113,8 +164,13 @@ fz_font* LoadSystemFont(fz_context* ctx, const char* name, int bold, int italic,
         break;
     }
     // 兜底：按 serif/sans 给个系统默认字体，比直接渲染失败要好。
+#ifdef _WIN32
     const char* const serifFallback[] = {"times.ttf", "georgia.ttf"};
     const char* const sansFallback[] = {"arial.ttf", "segoeui.ttf"};
+#else
+    const char* const serifFallback[] = {"DejaVuSerif.ttf", "NotoSerifCJK-Regular.ttc"};
+    const char* const sansFallback[] = {"DejaVuSans.ttf", "NotoSansCJK-Regular.ttc"};
+#endif
     const bool serif = HasPrefixNoCase(name, "times") || HasPrefixNoCase(name, "georgia") ||
                        HasPrefixNoCase(name, "cambria") || HasPrefixNoCase(name, "garamond");
     return serif ? TryList(ctx, serifFallback, 2, name) : TryList(ctx, sansFallback, 2, name);

@@ -10,24 +10,28 @@
 #include <thread>
 #include <vector>
 
-#include <windows.h>
-
 #include "ocr/engine.h"
 #include "pdf/doc.h"
 #include "pdf/lines_io.h"
 #include "pdf/output_check.h"
 #include "pdf/textlayer.h"
+#include "util/platform.h"
+#include "util/utf8_io.h"
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <sys/file.h>
+#include <sys/resource.h>
+#include <unistd.h>
+#endif
 
 namespace pdf {
 namespace {
-
-std::wstring ToWide(const std::string& s) {
-    if (s.empty()) return L"";
-    const int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
-    std::wstring w(n > 0 ? n - 1 : 0, L'\0');
-    if (n > 0) MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), n);
-    return w;
-}
 
 struct PageResult {
     std::vector<ocr::TextLine> lines;
@@ -46,7 +50,8 @@ std::string DefaultCachePath(const std::string& outPdf) {
     return stem + "_ocrcache.tsv";
 }
 
-/// 任务锁：独占打开 <输出>.lock，进程退出（含崩溃）由系统自动删除，
+#ifdef _WIN32
+/// 用临时占用文件 <输出>.lock，进程退出时由操作系统自动删除，
 /// 防止两个进程同时写同一个输出文件。
 class OutputLock {
 public:
@@ -54,11 +59,11 @@ public:
         if (h_ != INVALID_HANDLE_VALUE) CloseHandle(h_);
     }
     bool Acquire(const std::string& outputPath, std::string* err) {
-        const std::wstring path = ToWide(outputPath + ".lock");
+        const std::wstring path = util::Utf8ToWide(outputPath + ".lock");
         h_ = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                          FILE_ATTRIBUTE_NORMAL | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
         if (h_ == INVALID_HANDLE_VALUE) {
-            if (err) *err = "已有任务正在处理同一输出（锁被占用）：" + outputPath;
+            if (err) *err = "另一个程序正在处理同一个输出文件（占用中）：" + outputPath;
             return false;
         }
         return true;
@@ -67,6 +72,44 @@ public:
 private:
     HANDLE h_ = INVALID_HANDLE_VALUE;
 };
+#else
+/// POSIX port: flock-based lock on <output>.lock, unlinked on release.
+class OutputLock {
+public:
+    ~OutputLock() {
+        if (fd_ >= 0) {
+            ::unlink(path_.c_str());
+            ::close(fd_);
+        }
+    }
+    bool Acquire(const std::string& outputPath, std::string* err) {
+        path_ = outputPath + ".lock";
+        fd_ = ::open(path_.c_str(), O_CREAT | O_RDWR, 0644);
+        if (fd_ < 0 || ::flock(fd_, LOCK_EX | LOCK_NB) != 0) {
+            if (fd_ >= 0) {
+                ::close(fd_);
+                fd_ = -1;
+            }
+            if (err) *err = "另一个程序正在处理同一个输出文件（占用中）：" + outputPath;
+            return false;
+        }
+        return true;
+    }
+
+private:
+    int fd_ = -1;
+    std::string path_;
+};
+#endif
+
+/// Low process priority so OCR does not starve the UI thread.
+void LowerProcessPriority() {
+#ifdef _WIN32
+    SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS);
+#else
+    ::setpriority(PRIO_PROCESS, 0, 10);
+#endif
+}
 
 }  // namespace
 
@@ -99,8 +142,7 @@ bool RunPdfOcr(const OcrRunOptions& opt, const OcrProgress& progress, OcrRunStat
                std::string* err) {
     const auto t0 = std::chrono::steady_clock::now();
     std::string message;
-    // 降低进程优先级，避免 OCR 抢占前台响应
-    SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS);
+    LowerProcessPriority();
 
     Document doc;
     if (!doc.Open(opt.inputPath, &message)) {
@@ -140,7 +182,7 @@ bool RunPdfOcr(const OcrRunOptions& opt, const OcrProgress& progress, OcrRunStat
     if (opt.resume) {
         cachePath = opt.cachePath.empty() ? DefaultCachePath(opt.outputPath) : opt.cachePath;
         ocr::EngineOptions tagOpt;
-        tagOpt.modelDir = ToWide(opt.modelDir);
+        tagOpt.modelDir = opt.modelDir;
         tagOpt.detModel = opt.detModel;
         tagOpt.recModel = opt.recModel;
         cacheTag = ocr::ModelTag(tagOpt);
@@ -242,7 +284,7 @@ bool RunPdfOcr(const OcrRunOptions& opt, const OcrProgress& progress, OcrRunStat
             return;
         }
         ocr::EngineOptions eopt;
-        eopt.modelDir = ToWide(opt.modelDir);
+        eopt.modelDir = opt.modelDir;
         eopt.detModel = opt.detModel;
         eopt.recModel = opt.recModel;
         eopt.clsModel = opt.clsModel;
@@ -378,8 +420,7 @@ bool RunPdfOcr(const OcrRunOptions& opt, const OcrProgress& progress, OcrRunStat
                     list += std::to_string(bad[k]);
                 }
                 if (bad.size() > 8) list += ",...";
-                const std::wstring deleted = ToWide(opt.outputPath);
-                DeleteFileW(deleted.c_str());  // 别把坏文件留在磁盘上冒充成功
+                util::RemoveFile(opt.outputPath);  // 别把坏文件留在磁盘上冒充成功
                 if (err) {
                     *err = "输出校验失败：第 " + list +
                            (check.lostPages.empty() ? " 页的文字提取被打断了" : " 页内容丢失") +
@@ -400,7 +441,7 @@ bool RunPdfOcr(const OcrRunOptions& opt, const OcrProgress& progress, OcrRunStat
     const bool cacheUsed = opt.resume && !cachePath.empty();
     const bool keepForReview = !opt.fixCsvPath.empty() || !opt.csvPath.empty();
     if (cacheUsed && !opt.keepCache && !keepForReview && fullDocument) {
-        if (DeleteFileW(ToWide(cachePath).c_str()) != 0 && stats) stats->cacheRemoved = true;
+        if (util::RemoveFile(cachePath) && stats) stats->cacheRemoved = true;
     }
 
     if (!opt.csvPath.empty()) {

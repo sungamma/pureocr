@@ -1,5 +1,8 @@
 #include "util/http_download.h"
 
+// Windows 实现：WinHTTP + CNG。Linux/macOS 见 http_download_posix.cpp。
+#ifdef _WIN32
+
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -319,3 +322,5 @@ bool HttpDownload(const std::string& url, const std::string& outPath,
 }
 
 }  // namespace util
+
+#endif  // _WIN32

@@ -1,0 +1,4 @@
+#pragma once
+// 由 CMake 根据仓库根目录的 VERSION 文件生成，不要手改。
+#define OCRGUI_VERSION_STRING "@OCRGUI_VERSION@"
+#define OCRGUI_VERSION_COMMA @OCRGUI_VERSION_COMMA@

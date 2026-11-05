@@ -1,35 +1,54 @@
 # 跨平台现状（Linux / macOS）
 
-**结论：当前只支持 Windows 10/11 x64。** CI 里的 Linux / macOS 任务只是“编译探测”，失败不影响流水线。
+**结论：Windows 10/11 x64 与 Linux x64 均已支持**（同一份代码，用 `#ifdef _WIN32` 分支）；
+macOS 尚未完成，CI 里只有“编译探测”，失败不阻塞流水线。
 
 ## CI 现状
 
 | 平台 | 状态 | 说明 |
 |---|---|---|
-| Windows x64 (MSVC) | ✅ 完整 | `tools/fetch_deps.ps1` + `tools/release.ps1`，产物是可直接双击运行的 zip |
-| Ubuntu | ⚠️ 探测 | 只跑 `cmake configure` / `build`，预期失败 |
-| macOS | ⚠️ 探测 | 同上 |
+| Windows x64 (MSVC) | 完整 | `tools/fetch_deps.ps1` + `tools/release.ps1`，产物 `ocrgui-<ver>-win-x64.zip` |
+| Linux x64 (GCC) | 完整 | `tools/fetch_deps_linux.sh` + `tools/package_linux.sh`，产物 `ocrgui-<ver>-linux-x64.tar.gz` |
+| macOS | 探测 | 只跑 configure/build，`continue-on-error: true` |
 
-移植完成后，把 `.github/workflows/build.yml` 里 `unix-probe` 任务的 `continue-on-error: true` 去掉即可。
+发布：推送 `v*` tag（且与 `VERSION` 一致）后，`release` 任务把 Windows 与 Linux 产物一起上传到同一个 GitHub Release。
 
-## 为什么要移植（Windows 专有代码清单）
+## 平台适配层
 
-| 位置 | Windows 专有内容 | 移植方案 |
+| 位置 | Windows 实现 | POSIX 实现 |
 |---|---|---|
-| `src/util/http_download.cpp` | WinHTTP 下载模型（34 处 API） | 换成 libcurl（`find_package(CURL)`），Win 上也可复用 |
-| `src/main.cpp` | `GetOpenFileNameW` / `GetSaveFileNameW` / `ShellExecuteW` | 抽一个 `platform_dialogs` 接口；macOS 用 NSOpenPanel，Linux 用 GTK/zenity，或退化成“拖拽 + 命令行” |
-| `src/pdf/system_fonts.cpp` | 注册表 + `C:\Windows\Fonts` 找 CJK 字体 | macOS 用 CoreText，Linux 用 fontconfig（`FcFontMatch`） |
-| `src/util/utf8_io.h`、`src/cli.cpp`、`src/ocr/engine.cpp`、`src/pdf/ocr_pages.cpp`、`src/util/model_registry.cpp` | `MultiByteToWideChar` / 宽字符路径 | POSIX 上路径本来就是 UTF-8，抽象成 `path_from_utf8()` 后直接用窄字符串；ORT 的 `ORT_TSTR` 在非 Windows 上就是 `char` |
-| `CMakeLists.txt` | `add_executable(... WIN32 ...)`、`resources/app.rc`（图标/版本）、`winhttp/comdlg32/shell32/ole32/bcrypt` | 条件化：非 Windows 去掉 `WIN32` 与 `.rc`；`opengl32`→`OpenGL`/`Cocoa` 由 GLFW 自带 |
-| `libmupdf.lib` + `tools/slim_mupdf.ps1` + `src/pdf/mupdf_font_stubs.cpp` | 静态库名与 `lib.exe /REMOVE` 瘦身 | macOS/Linux 用 `make build=release libs` 编 MuPDF（产物 `libmupdf.a`），需要用 `ar d` 做同样的字体剔除 |
-| 依赖目录 `third_party/*` | 只放了 win-x64 的 ONNX Runtime 与 MSVC 版 MuPDF | 非 Windows 需要各自平台（linux-x64 / osx-arm64 等）的 ORT 包，见 `tools/fetch_deps.ps1` |
+| `src/util/platform.h` | 宽字符 Win32 API | `stat` / `mkdir` / `readlink("/proc/self/exe")` |
+| `src/util/utf8_io.h` | UTF-8 转 UTF-16 后用 `_wfopen_s` | 直接 `fopen`（路径本身就是 UTF-8 字节） |
+| `src/util/http_download.cpp` / `http_download_posix.cpp` | WinHTTP + CNG SHA256 | libcurl + OpenSSL SHA256 |
+| `src/main.cpp` | `GetOpenFileNameW` / `SHBrowseForFolderW` / `ShellExecuteW` | `zenity` 文件选择 + `xdg-open` 打开目录 |
+| `src/pdf/ocr_pages.cpp` | `CreateFileW` 独占锁 / `SetPriorityClass` | `flock` 独占锁 / `setpriority` |
+| `src/pdf/system_fonts.cpp` | `C:\Windows\Fonts` 内置清单 | Noto CJK / 文泉驿 / DejaVu 常见路径 |
+| `src/ocr/engine.cpp` | `ORTCHAR_T = wchar_t` | `ORTCHAR_T = char`（`PathStr` 抽象） |
+| `src/util/model_registry.cpp` | `%LOCALAPPDATA%` 回退 | `$XDG_DATA_HOME` / `$HOME` 回退 |
 
-## 移植顺序建议
+## Linux 依赖
 
-1. 先抽 `src/util/platform.h`：UTF-8 路径、系统字体、对话框、HTTP 四组接口，Windows 实现保持现状，其它平台先给“最小可用”实现（对话框可以只留拖拽）。
-2. 换 HTTP 后端（libcurl）——这是唯一会阻塞 “下载模型” 的部分，也是命令行批处理必需的。
-3. 改 CMake：`if (WIN32)` 包住 `.rc` / `WIN32` 子系统 / win 库；MuPDF 库名按平台区分。
-4. 编 MuPDF：macOS/Linux 上 `cd third_party/mupdf-1.25.0/src && make build=release libs`。
-5. 在 CI 里打开 `unix-probe` 的失败拦截，确认矩阵全绿后再发版。
+```bash
+sudo apt-get install -y build-essential cmake ninja-build pkg-config \
+     libcurl4-openssl-dev libssl-dev libgl1-mesa-dev libglu1-mesa-dev xorg-dev \
+     libfontconfig1-dev fonts-noto-cjk zenity
+```
 
-> 注意：拖拽文件在 GLFW 上是跨平台的，可以先把 Linux/macOS 的“选择文件”降级成拖拽，再做原生对话框。
+MuPDF 与 ONNX Runtime 由 `tools/fetch_deps_linux.sh` 下载/编译到 `third_party/`（不入库）。
+MuPDF 需要链接 `libmupdf.a` 与 `libmupdf-third.a`，CMake 已处理。
+
+## 已知限制（Linux）
+
+- 文件/文件夹对话框依赖 `zenity`（未安装时只能走命令行参数）。
+- GUI 需要 X11 / Wayland 显示服务器；无头环境请用 `--pdf` / `--dir` 命令行模式。
+- 内置 simhei 字体不存在，PDF 文字层改用系统 Noto CJK；缺失时会在日志中提示。
+- 断点续跑的锁文件用 `flock`，NFS 等不支持 `flock` 的文件系统上可能失效。
+
+## macOS 后续工作
+
+`src/util/platform.h` 已预留 `_NSGetExecutablePath` 分支，剩余需要补的：
+
+1. `http_download_posix.cpp` 可直接复用（libcurl + OpenSSL 或 Security.framework）。
+2. 系统字体表补 `/System/Library/Fonts/`（PingFang / Hiragino）路径。
+3. 文件对话框接 `osascript` 或原生 NSOpenPanel。
+4. CI 去掉 `macos-probe` 的 `continue-on-error` 并接入打包。

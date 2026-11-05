@@ -1,11 +1,12 @@
 #include <windows.h>
 #include "resource.h"
+#include "version.h"
 
 IDI_APPICON ICON "ocrgui.ico"
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 0,12,5,0
- PRODUCTVERSION 0,12,5,0
+ FILEVERSION OCRGUI_VERSION_COMMA
+ PRODUCTVERSION OCRGUI_VERSION_COMMA
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS 0x40004L
@@ -21,7 +22,7 @@ BEGIN
             VALUE "InternalName", "ocrgui"
             VALUE "OriginalFilename", "ocrgui.exe"
             VALUE "ProductName", "PDF OCR"
-            VALUE "ProductVersion", "0.12.5"
+            VALUE "ProductVersion", OCRGUI_VERSION_STRING
         END
     END
     BLOCK "VarFileInfo"

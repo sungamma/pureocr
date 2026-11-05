@@ -39,8 +39,13 @@ if (-not (Test-Path -LiteralPath $modelsDir)) {
     throw "找不到模型目录 $modelsDir，请先运行：ocrgui.exe --fetch-models"
 }
 
-$stamp   = if ($Version) { $Version } else { Get-Date -Format 'yyyyMMdd' }
-$pkgName = "ocrgui-$stamp"
+if (-not $Version) {
+    $verFile = Join-Path $repoRoot 'VERSION'
+    if (Test-Path -LiteralPath $verFile) { $Version = (Get-Content -LiteralPath $verFile -Raw).Trim() }
+}
+if (-not $Version) { $Version = Get-Date -Format 'yyyyMMdd' }
+$stamp   = $Version
+$pkgName = "ocrgui-$stamp-win-x64"
 $pkgDir  = Join-Path $OutDir $pkgName
 if (Test-Path -LiteralPath $pkgDir) {
     try {
@@ -175,7 +180,8 @@ $buildLines = @(
     "ocrgui 构建信息",
     "================",
     "构建时间 : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')",
-    "提交     : $commit",
+        "VERSION  : $Version",
+"提交     : $commit",
     "模型     : $Models（none = 首次运行在线下载）",
     "运行环境 : Windows 10/11 x64（纯 CPU，ONNX Runtime，不需要显卡）"
 )

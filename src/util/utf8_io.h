@@ -7,13 +7,16 @@
 #include <cstdio>
 #include <string>
 
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#endif
 
 namespace util {
 
+#ifdef _WIN32
 inline std::wstring Utf8ToWide(const std::string& s) {
     if (s.empty()) return std::wstring();
     const int len = static_cast<int>(s.size());
@@ -43,5 +46,14 @@ inline FILE* OpenUtf8(const std::string& path, const wchar_t* mode) {
     if (_wfopen_s(&f, w.c_str(), mode) != 0) return nullptr;
     return f;
 }
+#else
+// POSIX：路径本来就是 UTF-8 字节串，直接 fopen。
+inline FILE* OpenUtf8(const std::string& path, const wchar_t* mode) {
+    std::string m;
+    for (const wchar_t* p = mode; p && *p; ++p) m.push_back(static_cast<char>(*p));
+    if (path.empty() || m.empty()) return nullptr;
+    return std::fopen(path.c_str(), m.c_str());
+}
+#endif
 
 }  // namespace util

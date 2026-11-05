@@ -16,7 +16,7 @@ struct TextLine {
 
 /// 与 rapidocr_onnxruntime 默认配置保持一致
 struct EngineOptions {
-    std::wstring modelDir;      // 含三个 .onnx 的目录
+    std::string modelDir;      // 含三个 .onnx 的目录
     std::string detModel;       // det 模型：modelDir 下的文件名，或绝对路径；空 = 自动探测（v4 优先）
     std::string recModel;       // rec 模型：同上
     std::string clsModel;       // 方向分类模型：同上；找不到会自动关闭该步骤

@@ -318,8 +318,13 @@ if (-not (Test-Path -LiteralPath (Join-Path $exeDir 'onnxruntime.dll'))) {
 }
 
 # ---------------- 打包 ----------------
-$stamp   = if ($Version) { $Version } else { Get-Date -Format 'yyyyMMdd' }
-$pkgName = "ocrgui-$stamp"
+if (-not $Version) {
+    $verFile = Join-Path $srcDir 'VERSION'
+    if (Test-Path -LiteralPath $verFile) { $Version = (Get-Content -LiteralPath $verFile -Raw).Trim() }
+}
+if (-not $Version) { $Version = Get-Date -Format 'yyyyMMdd' }
+$stamp   = $Version
+$pkgName = "ocrgui-$stamp-win-x64"
 $pkgDir  = Join-Path $OutDir $pkgName
 $zip     = Join-Path $OutDir "$pkgName.zip"
 

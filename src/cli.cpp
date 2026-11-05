@@ -2,6 +2,8 @@
 #include "util/utf8_io.h"
 
 #include "util/path_util.h"
+#include "util/platform.h"
+#include "version.h"
 
 #include <algorithm>
 #include <atomic>
@@ -13,8 +15,12 @@
 #include <thread>
 #include <vector>
 
+#ifdef _WIN32
 #include <io.h>
 #include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 #include "ocr/engine.h"
 #include "ocr/image.h"
@@ -28,29 +34,21 @@
 
 namespace {
 
-std::wstring ToWide(const std::string &s) {
-    if (s.empty()) return L"";
-    const int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
-    std::wstring w(n > 0 ? n - 1 : 0, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), n);
-    return w;
-}
-
-std::string ExeDir() {
-    char exe[MAX_PATH] = {0};
-    GetModuleFileNameA(nullptr, exe, MAX_PATH);
-    std::string dir(exe);
-    const size_t p = dir.find_last_of("\\/");
-    return p == std::string::npos ? std::string(".") : dir.substr(0, p);
-}
-
-std::string DefaultModelDir() { return ExeDir() + "\\models"; }
+std::string DefaultModelDir() { return util::ExeDir() + "/models"; }
 
 std::string DefaultFont() {
+#ifdef _WIN32
     const char *cands[] = {u8"C:\\Windows\\Fonts\\simhei.ttf", u8"C:\\Windows\\Fonts\\simkai.ttf",
                            u8"C:\\Windows\\Fonts\\msyh.ttc", u8"C:\\Windows\\Fonts\\simsun.ttc"};
+#else
+    const char *cands[] = {"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                           "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+                           "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
+                           "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+                           "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"};
+#endif
     for (const char *c : cands) {
-        if (GetFileAttributesW(ToWide(c).c_str()) != INVALID_FILE_ATTRIBUTES) return c;
+        if (util::PathExists(c)) return c;
     }
     return "";
 }
@@ -491,7 +489,11 @@ int RunCli(int argc, char **argv) {
             fetchModels = true;
         } else if (a == "--source" && i + 1 < argc) {
             source = argv[++i];
+        } else if (a == "--version" || a == "-V") {
+            std::printf("ocrgui %s\n", OCRGUI_VERSION_STRING);
+            return 0;
         } else if (a == "--help" || a == "-h") {
+            std::printf("ocrgui %s\n\n", OCRGUI_VERSION_STRING);
             std::printf("用法:\n");
             std::printf("  ocrgui --pdf <输入.pdf> [--out-pdf <输出.pdf>] [--dpi 300] [--threads 2]\n");
             std::printf("         [--pages 1-10,15] [--font <ttf>] [--mask] [--min-score 0.55]\n");
@@ -521,8 +523,13 @@ int RunCli(int argc, char **argv) {
         // 不能用 freopen_s：char* 路径按 ANSI 代码页解释，中文路径打不开；
         // 而且打开失败时 stdout 会被关掉，后续 printf 触发「无效参数」直接中止进程（闪退）。
         if (FILE *lf = util::OpenUtf8(logPath, L"w")) {
+#ifdef _WIN32
             _dup2(_fileno(lf), _fileno(stdout));
             _dup2(_fileno(lf), _fileno(stderr));
+#else
+            ::dup2(::fileno(lf), ::fileno(stdout));
+            ::dup2(::fileno(lf), ::fileno(stderr));
+#endif
             std::fclose(lf);  // stdout/stderr 已持有复制出来的句柄
         } else {
             std::fprintf(stderr, "警告：日志文件无法写入（%s），本次只输出到控制台\n", logPath.c_str());
@@ -579,7 +586,7 @@ int RunCli(int argc, char **argv) {
     std::fprintf(stderr, "图片 %dx%d，模型目录 %s\n", img.w, img.h, modelDir.c_str());
 
     ocr::EngineOptions opt;
-    opt.modelDir = ToWide(modelDir);
+    opt.modelDir = modelDir;
     opt.minScore = minScore;
     opt.threads = threads;
     opt.dumpCropsDir = dumpDir;

@@ -3,16 +3,23 @@
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 
+#ifdef _WIN32
 #include <windows.h>
 #include <commdlg.h>
 #include <shellapi.h>
 #include <shlobj.h>
 #define GLFW_EXPOSE_NATIVE_WIN32
-#include <GLFW/glfw3.h>
-#include <GLFW/glfw3native.h>
-
 #include "resource.h"
+#else
+#include <unistd.h>
+#endif
+
+#include <GLFW/glfw3.h>
+#ifdef _WIN32
+#include <GLFW/glfw3native.h>
+#endif
 #include "stb_image_write.h"
+#include "version.h"
 
 #include <algorithm>
 #include <atomic>
@@ -31,6 +38,7 @@
 
 #include "util/path_util.h"
 #include "util/utf8_io.h"
+#include "util/platform.h"
 #include "util/http_download.h"
 #include "util/model_download.h"
 #include "util/model_registry.h"
@@ -126,31 +134,7 @@ int g_texW = 0;
 int g_texH = 0;
 #endif
 
-std::string WideToUtf8(const wchar_t* s) {
-    if (!s) return std::string();
-    const int n = WideCharToMultiByte(CP_UTF8, 0, s, -1, nullptr, 0, nullptr, nullptr);
-    if (n <= 1) return std::string();
-    std::vector<char> buf(static_cast<size_t>(n));  // 含结尾 0，避免写越界
-    WideCharToMultiByte(CP_UTF8, 0, s, -1, buf.data(), n, nullptr, nullptr);
-    return std::string(buf.data(), static_cast<size_t>(n - 1));
-}
-
-std::wstring Utf8ToWide(const std::string& s) {
-    if (s.empty()) return std::wstring();
-    const int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
-    if (n <= 1) return std::wstring();
-    std::vector<wchar_t> buf(static_cast<size_t>(n));  // 含结尾 0，避免写越界
-    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, buf.data(), n);
-    return std::wstring(buf.data(), static_cast<size_t>(n - 1));
-}
-
-std::string ExeDir() {
-    wchar_t exe[MAX_PATH] = L"";
-    GetModuleFileNameW(nullptr, exe, MAX_PATH);
-    const std::string dir = WideToUtf8(exe);
-    const size_t p = dir.find_last_of("\\/");
-    return p == std::string::npos ? std::string(".") : dir.substr(0, p);
-}
+std::string ExeDir() { return util::ExeDir(); }
 
 void PushLog(const std::string& line) {
     std::lock_guard<std::mutex> lk(g_mutex);
@@ -163,9 +147,7 @@ std::string DefaultOutputPath(const std::string& input) {
 }
 
 bool IsDirPath(const std::string& path) {
-    if (path.empty()) return false;
-    const DWORD attr = GetFileAttributesW(Utf8ToWide(path).c_str());
-    return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    return util::IsDirectory(path);
 }
 
 /// 目录里待处理的 PDF（跳过 *_OCR.pdf 产物）；recurse=true 时含子目录。
@@ -217,6 +199,7 @@ int BatchPdfCount(const std::string& folder, bool recurse) {
 
 /// 选择包含 PDF 的文件夹（批量模式）
 void OpenFolderDialog() {
+#ifdef _WIN32
     BROWSEINFOW bi = {};
     bi.hwndOwner = GetActiveWindow();
     bi.lpszTitle = L"选择包含 PDF 的文件夹";
@@ -225,7 +208,7 @@ void OpenFolderDialog() {
     if (!pidl) return;
     wchar_t path[MAX_PATH] = L"";
     if (SHGetPathFromIDListW(pidl, path)) {
-        g_pdfPath = WideToUtf8(path);
+        g_pdfPath = util::WideToUtf8(path);
         g_outPath.clear();  // 批量模式输出跟着每个源文件走
         g_batchMode = true;
         PushLog("选择文件夹：" + g_pdfPath);
@@ -233,37 +216,47 @@ void OpenFolderDialog() {
         PushLog("待处理 PDF：" + std::to_string(n) + " 个（已跳过 *_OCR.pdf）");
     }
     CoTaskMemFree(pidl);
+#else
+    // Linux：没有原生对话框后端，批量模式走「拖入文件夹」或命令行 --dir
+    PushLog("Linux 版请把文件夹拖进窗口，或用命令行 --dir 指定目录");
+#endif
 }
 
 bool FileExistsUtf8(const std::string& path) {
-    return GetFileAttributesW(Utf8ToWide(path).c_str()) != INVALID_FILE_ATTRIBUTES;
+    return util::PathExists(path);
 }
 
 /// OCR 文本层要嵌入的字体：优先黑体，再退化到楷体 / 雅黑 / 宋体。
 /// 以前这里写死 simhei.ttf，没装该字体的机器会直接"文本层初始化失败"。
 std::string OcrFontPath() {
+#ifdef _WIN32
     static const char* kCandidates[] = {"C:\\Windows\\Fonts\\simhei.ttf",
                                         "C:\\Windows\\Fonts\\simkai.ttf",
                                         "C:\\Windows\\Fonts\\msyh.ttc",
                                         "C:\\Windows\\Fonts\\simsun.ttc"};
+#else
+    static const char* kCandidates[] = {
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc"};
+#endif
     for (const char* c : kCandidates) {
         if (FileExistsUtf8(c)) return c;
     }
     return kCandidates[0];
 }
 
-/// %LOCALAPPDATA%\ocrgui\settings.ini
+/// Windows: %LOCALAPPDATA%\\ocrgui\\settings.ini；Linux: $XDG_CONFIG_HOME/ocrgui/settings.ini
 std::string SettingsPath() {
-    std::string dir;
-    char* buf = nullptr;
-    size_t len = 0;
-    if (_dupenv_s(&buf, &len, "LOCALAPPDATA") == 0 && buf) {
-        dir = buf;
-        free(buf);
-    }
+    std::string dir = util::GetEnv("LOCALAPPDATA");
+    if (dir.empty()) dir = util::GetEnv("XDG_CONFIG_HOME");
+    if (dir.empty()) dir = util::GetEnv("HOME");
     if (dir.empty()) dir = ExeDir();
-    CreateDirectoryW(Utf8ToWide(dir + "\\ocrgui").c_str(), nullptr);
-    return dir + "\\ocrgui\\settings.ini";
+    const std::string cfgDir = dir + "/ocrgui";
+    util::MakeDirs(cfgDir);
+    return cfgDir + "/settings.ini";
 }
 
 void LoadSettings() {
@@ -467,54 +460,85 @@ void DropCallback(GLFWwindow*, int count, const char** paths) {
     }
 }
 
-/// 选择回灌用的复核 CSV
-void PickFixCsvDialog() {
+/// 弹出一个系统文件选择框；Linux 用 zenity/kdialog，取不到就返回空串。
+std::string PickPathDialog(const char* mode, const char* filterName, const char* pattern,
+                           const std::string& initial) {
+#ifdef _WIN32
     wchar_t file[1024] = L"";
-    if (!g_fixCsv.empty()) wcsncpy_s(file, Utf8ToWide(g_fixCsv).c_str(), _TRUNCATE);
-    OPENFILENAMEW ofn = {};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = GetActiveWindow();
-    ofn.lpstrFilter = L"CSV 文件 (*.csv)\0*.csv\0\0";
-    ofn.lpstrFile = file;
-    ofn.nMaxFile = 1024;
-    ofn.lpstrDefExt = L"csv";
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-    if (!GetOpenFileNameW(&ofn)) return;
-    g_fixCsv = WideToUtf8(file);
-    PushLog("已选择复核 CSV：" + g_fixCsv);
-    PushLog("点「开始识别」应用修改（同参数下会命中缓存，很快）");
-}
-
-void OpenPdfDialog() {
-    wchar_t file[1024] = L"";
-    OPENFILENAMEW ofn = {};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = GetActiveWindow();
-    ofn.lpstrFilter = L"PDF 文件 (*.pdf)\0*.pdf\0\0";
-    ofn.lpstrFile = file;
-    ofn.nMaxFile = 1024;
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-    if (GetOpenFileNameW(&ofn)) {
-        g_pdfPath = WideToUtf8(file);
-        g_outPath = DefaultOutputPath(g_pdfPath);
-    }
-}
-
-void SavePdfDialog() {
-    wchar_t file[1024] = L"";
-    if (!g_outPath.empty()) {
-        const std::wstring w = Utf8ToWide(g_outPath);
+    if (!initial.empty()) {
+        const std::wstring w = util::Utf8ToWide(initial);
         wcsncpy_s(file, w.c_str(), _TRUNCATE);
     }
     OPENFILENAMEW ofn = {};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = GetActiveWindow();
-    ofn.lpstrFilter = L"PDF 文件 (*.pdf)\0*.pdf\0\0";
+    std::wstring wfilter = util::Utf8ToWide(std::string(filterName) + " (" + pattern + ")");
+    wfilter.push_back(L'\0');
+    wfilter += util::Utf8ToWide(pattern);
+    wfilter.push_back(L'\0');
+    wfilter.push_back(L'\0');
+    ofn.lpstrFilter = wfilter.c_str();
     ofn.lpstrFile = file;
     ofn.nMaxFile = 1024;
-    ofn.lpstrDefExt = L"pdf";
-    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
-    if (GetSaveFileNameW(&ofn)) g_outPath = WideToUtf8(file);
+    std::wstring wdef = util::Utf8ToWide(pattern);
+    wdef.erase(0, std::min<size_t>(2, wdef.size()));  // "*.pdf" -> "pdf"
+    ofn.lpstrDefExt = wdef.c_str();
+    ofn.Flags = (std::string(mode) == "save") ? (OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST)
+                                             : (OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST);
+    const BOOL ok = (std::string(mode) == "save") ? GetSaveFileNameW(&ofn) : GetOpenFileNameW(&ofn);
+    if (!ok) return std::string();
+    return util::WideToUtf8(file);
+#else
+    std::string cmd;
+    const std::string quoted = "\"" + pattern + "\"";
+    if (std::string(mode) == "save") {
+        cmd = "zenity --file-selection --save --confirm-overwrite --file-filter=" + quoted;
+        if (!initial.empty()) cmd += " --filename=\"" + initial + "\"";
+    } else {
+        cmd = "zenity --file-selection --file-filter=" + quoted;
+        if (!initial.empty()) cmd += " --filename=\"" + initial + "\"";
+    }
+    cmd += " 2>/dev/null";
+    FILE* pipe = popen(cmd.c_str(), "r");
+    if (!pipe) return std::string();
+    std::string out;
+    char buf[1024];
+    while (std::fgets(buf, sizeof(buf), pipe)) out += buf;
+    pclose(pipe);
+    while (!out.empty() && (out.back() == '\n' || out.back() == '\r')) out.pop_back();
+    return out;
+#endif
+}
+
+/// 选择回灌用的复核 CSV
+void PickFixCsvDialog() {
+    const std::string picked = PickPathDialog("open", "CSV 文件", "*.csv", g_fixCsv);
+    if (picked.empty()) return;
+    g_fixCsv = picked;
+    PushLog("已选择复核 CSV：" + g_fixCsv);
+    PushLog("点「开始识别」应用修改（同参数下会命中缓存，很快）");
+}
+
+void OpenPdfDialog() {
+    const std::string picked = PickPathDialog("open", "PDF 文件", "*.pdf", "");
+    if (picked.empty()) return;
+    g_pdfPath = picked;
+    g_outPath = DefaultOutputPath(g_pdfPath);
+}
+
+void SavePdfDialog() {
+    const std::string picked = PickPathDialog("save", "PDF 文件", "*.pdf", g_outPath);
+    if (!picked.empty()) g_outPath = picked;
+}
+
+/// 用系统默认程序打开文件 / 文件管理器（跨平台）。
+void OpenInFileManager(const std::string& path) {
+#ifdef _WIN32
+    ShellExecuteW(nullptr, L"open", util::Utf8ToWide(path).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+#else
+    const std::string cmd = "xdg-open \"" + path + "\" >/dev/null 2>&1 &";
+    (void)std::system(cmd.c_str());
+#endif
 }
 
 std::string ReviewCsvPath() {
@@ -533,19 +557,9 @@ void ExportReviewCsv() {
         return;
     }
     std::string path = ReviewCsvPath();
-    wchar_t file[1024] = L"";
-    const std::wstring w = Utf8ToWide(path);
-    wcsncpy_s(file, w.c_str(), _TRUNCATE);
-    OPENFILENAMEW ofn = {};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = GetActiveWindow();
-    ofn.lpstrFilter = L"CSV 文件 (*.csv)\0*.csv\0\0";
-    ofn.lpstrFile = file;
-    ofn.nMaxFile = 1024;
-    ofn.lpstrDefExt = L"csv";
-    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
-    if (!GetSaveFileNameW(&ofn)) return;
-    path = WideToUtf8(file);
+    const std::string picked = PickPathDialog("save", "CSV 文件", "*.csv", path);
+    if (picked.empty()) return;
+    path = picked;
     std::string err;
     if (!pdf::WriteLinesCsv(path, g_pageLines, g_lastDpi, g_reviewScore, &err)) {
         PushLog("导出 CSV 失败：" + err);
@@ -564,7 +578,7 @@ void OpenOutputFolder() {
     if (g_outPath.empty()) return;
     const std::string dir = util::ParentDir(g_outPath);
     if (dir.empty() || !std::filesystem::is_directory(std::filesystem::u8path(dir))) return;
-    ShellExecuteW(nullptr, L"open", Utf8ToWide(dir).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    OpenInFileManager(dir);
 }
 
 // ---- 模型清单 / 缺件判断 / 下载（GUI 用）----
@@ -884,12 +898,21 @@ static PFN_glBindFramebuffer p_glBindFramebuffer = nullptr;
 static PFN_glFramebufferTexture2D p_glFramebufferTexture2D = nullptr;
 static PFN_glCheckFramebufferStatus p_glCheckFramebufferStatus = nullptr;
 static void LoadShotFboFuncs() {
+#if defined(_WIN32)
     p_glGenFramebuffers = reinterpret_cast<PFN_glGenFramebuffers>(wglGetProcAddress("glGenFramebuffers"));
     p_glBindFramebuffer = reinterpret_cast<PFN_glBindFramebuffer>(wglGetProcAddress("glBindFramebuffer"));
     p_glFramebufferTexture2D =
         reinterpret_cast<PFN_glFramebufferTexture2D>(wglGetProcAddress("glFramebufferTexture2D"));
     p_glCheckFramebufferStatus =
         reinterpret_cast<PFN_glCheckFramebufferStatus>(wglGetProcAddress("glCheckFramebufferStatus"));
+#else
+    p_glGenFramebuffers = reinterpret_cast<PFN_glGenFramebuffers>(glfwGetProcAddress("glGenFramebuffers"));
+    p_glBindFramebuffer = reinterpret_cast<PFN_glBindFramebuffer>(glfwGetProcAddress("glBindFramebuffer"));
+    p_glFramebufferTexture2D =
+        reinterpret_cast<PFN_glFramebufferTexture2D>(glfwGetProcAddress("glFramebufferTexture2D"));
+    p_glCheckFramebufferStatus =
+        reinterpret_cast<PFN_glCheckFramebufferStatus>(glfwGetProcAddress("glCheckFramebufferStatus"));
+#endif
 }
 
 // 抓一帧画面存 PNG（这个环境没有可用桌面，只能自己读帧缓冲）
@@ -909,7 +932,11 @@ void MaybeCaptureShot(int w, int h) {
     std::vector<unsigned char> flipped(px.size());
     for (int y = 0; y < h; ++y) std::memcpy(&flipped[row * (h - 1 - y)], &px[row * y], row);
     stbi_write_png(g_shotPath.c_str(), w, h, 4, flipped.data(), static_cast<int>(row));
+#ifdef _WIN32
     if (FILE* f = nullptr; fopen_s(&f, (g_shotPath + ".txt").c_str(), "wb") == 0 && f) {
+#else
+    if (FILE* f = std::fopen((g_shotPath + ".txt").c_str(), "wb")) {
+#endif
         int ww = 0, wh = 0, fw = 0, fh = 0;
         GLFWwindow* win = glfwGetCurrentContext();
         glfwGetWindowSize(win, &ww, &wh);
@@ -1136,7 +1163,7 @@ void DrawSidebar() {
                     bool missing = false;
                     if (!g_modelDir.empty()) {
                         for (const char* f : {presets[i].det, presets[i].rec}) {
-                            if (f && f[0] && !FileExistsUtf8(g_modelDir + "\\" + f)) missing = true;
+                            if (f && f[0] && !FileExistsUtf8(g_modelDir + "/" + f)) missing = true;
                         }
                     }
                     if (missing) text += "  [缺模型]";
@@ -1348,8 +1375,7 @@ void DrawSidebar() {
         ImGui::PopTextWrapPos();
         if (IsDirPath(g_pdfPath)) {
             if (ImGui::Button("打开输入目录", ImVec2(-FLT_MIN, 32.0f * s)) && !g_pdfPath.empty()) {
-                ShellExecuteW(nullptr, L"open", Utf8ToWide(g_pdfPath).c_str(), nullptr, nullptr,
-                              SW_SHOWNORMAL);
+                OpenInFileManager(g_pdfPath);
             }
         } else if (!g_outPath.empty()) {
             const float bw = (ImGui::GetContentRegionAvail().x - 2.0f * 8.0f * s) / 3.0f;
@@ -1651,7 +1677,7 @@ void DrawStage() {
 #endif
 
 int RunGui() {
-    g_modelDir = ExeDir() + "\\models";
+    g_modelDir = ExeDir() + "/models";
     LoadSettings();
     {
         // 全新安装（模型目录里一个模型都没有）时直接弹下载向导，省得用户对着「缺模型」发呆
@@ -1676,7 +1702,9 @@ int RunGui() {
 
     if (winW < 900) winW = 900;
     if (winH < 620) winH = 620;
-    GLFWwindow* window = glfwCreateWindow(winW, winH, "PDF OCR - 扫描 PDF 转可复制文字", nullptr, nullptr);
+    const std::string windowTitle =
+        std::string("PDF OCR ") + OCRGUI_VERSION_STRING + " - 扫描 PDF 转可复制文字";
+    GLFWwindow* window = glfwCreateWindow(winW, winH, windowTitle.c_str(), nullptr, nullptr);
     if (!window) {
         glfwTerminate();
         return 1;
@@ -1685,6 +1713,7 @@ int RunGui() {
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
 
+#ifdef _WIN32
     // 窗口 / 任务栏图标（资源里编进去的 .ico）
     if (HICON ico = static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_APPICON),
                                                  IMAGE_ICON, 0, 0, LR_DEFAULTSIZE | LR_SHARED))) {
@@ -1692,6 +1721,7 @@ int RunGui() {
         SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(ico));
         SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(ico));
     }
+#endif
 
     // UI 缩放：帧缓冲和窗口同样大小（物理像素渲染）时，按显示器缩放放大界面
     float csX = 1.0f, csY = 1.0f;
@@ -1733,9 +1763,21 @@ int RunGui() {
 #endif
 
     // 字体：优先微软雅黑，缺字/缺失时退回黑体；正文、标题、品牌各一份
+#ifdef _WIN32
     const char* fontPath = FileExistsUtf8("C:\\Windows\\Fonts\\msyh.ttc")
                                ? "C:\\Windows\\Fonts\\msyh.ttc"
                                : "C:\\Windows\\Fonts\\simhei.ttf";
+#else
+    const char* fontPath = io.Fonts->Fonts.empty() ? nullptr : nullptr;
+    static const char* kLinuxFonts[] = {
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"};
+    for (const char* c : kLinuxFonts) {
+        if (FileExistsUtf8(c)) { fontPath = c; break; }
+    }
+#endif
     // 常用简体字表里没有 "阈/渲" 之类，另外还要箭头、圆点、对勾等符号，统一补上
     static ImVector<ImWchar> glyphRanges;
     {
@@ -1845,7 +1887,13 @@ int RunGui() {
     if (g_running) g_done = false;
     if (g_worker.joinable()) {
         // 关闭窗口时等待后台结束，避免进程被强制结束留下半成品
-        for (int i = 0; i < 600 && g_running; ++i) Sleep(100);
+        for (int i = 0; i < 600 && g_running; ++i) {
+#ifdef _WIN32
+            Sleep(100);
+#else
+            usleep(100 * 1000);
+#endif
+        }
         if (g_running) {
             g_worker.detach();
         } else {
@@ -1865,35 +1913,46 @@ int RunGui() {
     return 0;
 }
 
-}  // namespace
-
-int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
-    int argc = 0;
-    LPWSTR* wargv = CommandLineToArgvW(GetCommandLineW(), &argc);
+int RunApp(int argc, char** argv) {
 #ifdef OCRGUI_SELFTEST
-    if (wargv && argc > 2 && WideToUtf8(wargv[1]) == "--shot") {
-        g_shotPath = WideToUtf8(wargv[2]);
+    if (argc > 2 && std::string(argv[1]) == "--shot") {
+        g_shotPath = argv[2];
         g_shotFrame = 200;
-        if (argc > 3) g_shotW = _wtoi(wargv[3]);
-        if (argc > 4) g_shotH = _wtoi(wargv[4]);
-        LocalFree(wargv);
+        if (argc > 3) g_shotW = std::atoi(argv[3]);
+        if (argc > 4) g_shotH = std::atoi(argv[4]);
         return RunGui();
     }
-    g_selfTest = wargv && argc > 1 && WideToUtf8(wargv[1]) == "--selftest";
-    if (g_selfTest) {
-        LocalFree(wargv);
+    if (argc > 1 && std::string(argv[1]) == "--selftest") {
+        g_selfTest = true;
         return RunGui();
     }
 #endif
-    if (wargv && argc > 1) {
-        // 有参数 -> CLI 模式，需要把 stdout 接回父控制台
+    if (argc > 1) {
         std::vector<std::string> args;
-        args.reserve(argc);
-        for (int i = 0; i < argc; ++i) args.push_back(WideToUtf8(wargv[i]));
-        LocalFree(wargv);
-        // 只有「没有可用的标准输出句柄」或「输出到控制台」时才需要挂控制台；
-        // 若被父进程重定向到文件/管道（>log.txt、| more），必须保留继承来的句柄，
-        // 一旦 freopen 到 CONOUT$，重定向就全丢了（批量模式没法记日志）。
+        args.reserve(static_cast<size_t>(argc));
+        for (int i = 0; i < argc; ++i) args.push_back(argv[i]);
+        std::vector<char*> argvMut;
+        argvMut.reserve(args.size());
+        for (auto& a : args) argvMut.push_back(const_cast<char*>(a.c_str()));
+        return RunCli(static_cast<int>(argvMut.size()), argvMut.data());
+    }
+    return RunGui();
+}
+
+}  // namespace
+
+#ifdef _WIN32
+int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
+    int argc = 0;
+    LPWSTR* wargv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    std::vector<std::string> args;
+    args.reserve(static_cast<size_t>(argc > 0 ? argc : 0));
+    for (int i = 0; i < argc; ++i) args.push_back(util::WideToUtf8(wargv[i]));
+    if (wargv) LocalFree(wargv);
+
+    if (args.size() > 1) {
+        // 有参数 -> CLI 模式，需要把 stdout 接回父控制台。
+        // 若被父进程重定向到文件/管道（>log.txt、| more），必须保留继承来的句柄。
         auto needsConsole = [](HANDLE h) {
             if (h == nullptr || h == INVALID_HANDLE_VALUE) return true;
             return GetFileType(h) == FILE_TYPE_CHAR;
@@ -1907,11 +1966,12 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
             if (cerrConsole) freopen_s(&f, "CONOUT$", "w", stderr);
             SetConsoleOutputCP(CP_UTF8);
         }
-        std::vector<char*> argv;
-        argv.reserve(args.size());
-        for (auto& a : args) argv.push_back(const_cast<char*>(a.c_str()));
-        return RunCli(static_cast<int>(argv.size()), argv.data());
     }
-    if (wargv) LocalFree(wargv);
-    return RunGui();
+    std::vector<char*> argvMut;
+    argvMut.reserve(args.size());
+    for (auto& a : args) argvMut.push_back(const_cast<char*>(a.c_str()));
+    return RunApp(static_cast<int>(argvMut.size()), argvMut.data());
 }
+#else
+int main(int argc, char** argv) { return RunApp(argc, argv); }
+#endif

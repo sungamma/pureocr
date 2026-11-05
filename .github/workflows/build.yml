@@ -1,9 +1,10 @@
 name: build
 
 # 触发方式：
-#   - push 到 main / 打 tag（v*）→ 编译 + 打包 zip（tag 额外发 Release）
-#   - pull request    → 只验证能编译
-#   - 手动（workflow_dispatch）→ 可选模型与是否发 Release
+#   - push 到 main / master 或 tag（v*）：构建 + 打包
+#   - tag（v*）匹配 VERSION 时自动发布 GitHub Release
+#   - pull request：只验证能编译
+#   - 手动（workflow_dispatch）：可选模型与是否 Release
 on:
   push:
     branches: [main, master]
@@ -12,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       models:
-        description: '打包时附带哪些模型（none = 只带字典，首次运行时在线下载）'
+        description: '打包时附带哪些模型（none = 只带字典，首次运行下载）'
         type: choice
         options: [none, basic, full]
         default: none
@@ -34,10 +35,32 @@ env:
 
 jobs:
   # ------------------------------------------------------------------
-  # Windows x64：当前唯一完整支持的平台，产物即发布包
+  # 版本校验：tag / VERSION 一致性
+  # ------------------------------------------------------------------
+  version:
+    name: Version check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 校验 tag 与 VERSION
+        run: |
+          ver="$(head -n1 VERSION | tr -d '[:space:]')"
+          echo "VERSION=$ver" >> "$GITHUB_ENV"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tag="${GITHUB_REF#refs/tags/v}"
+            if [[ "$tag" != "$ver" ]]; then
+              echo "::error::tag v$tag 与 VERSION ($ver) 不一致"
+              exit 1
+            fi
+          fi
+          echo "version=$ver"
+
+  # ------------------------------------------------------------------
+  # Windows x64（MSVC）
   # ------------------------------------------------------------------
   windows:
     name: Windows x64 (MSVC)
+    needs: version
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,92 +71,165 @@ jobs:
           path: third_party/onnxruntime-win-x64-${{ env.ORT_VERSION }}
           key: ort-win-x64-${{ env.ORT_VERSION }}
 
-      - name: 缓存 MuPDF（含 slim 库，523 MB，重建要十几分钟）
+      - name: 缓存 MuPDF（含 slim 库）
         uses: actions/cache@v4
         with:
           path: third_party/mupdf-${{ env.MUPDF_VERSION }}
           key: mupdf-win-x64-${{ env.MUPDF_VERSION }}-slim-v1
 
-      - name: 下载依赖（已存在则跳过）
+      - name: 安装依赖（已存在则跳过）
         shell: pwsh
         run: pwsh -NoProfile -File tools/fetch_deps.ps1
 
-      - name: 下载模型（可选）
-        if: ${{ inputs.models != 'none' && inputs.models != '' }}
-        shell: pwsh
-        run: python tools/fetch_models.py
-
-      - name: 编译 + 打包
+      - name: 构建 + 打包
         shell: pwsh
         run: |
-          $ver = if ($env:GITHUB_REF -like 'refs/tags/v*') {
-            $env:GITHUB_REF -replace '^refs/tags/v', ''
-          } else {
-            'ci-' + $env:GITHUB_RUN_NUMBER
-          }
+          $ver = (Get-Content -LiteralPath VERSION -Raw).Trim()
           $models = if ($env:INPUT_MODELS) { $env:INPUT_MODELS } else { 'none' }
           Write-Host "版本=$ver 模型=$models"
           pwsh -NoProfile -File tools/release.ps1 -Clean -Version $ver -Models $models
+          Copy-Item -LiteralPath dist/SHA256SUMS.txt -Destination dist/SHA256SUMS-windows.txt -Force
         env:
           INPUT_MODELS: ${{ inputs.models }}
 
-      - name: 汇总产物
+      - name: 显示产物
         shell: pwsh
         run: |
           Get-ChildItem dist -Filter *.zip | ForEach-Object { $_.Name + '  ' + [math]::Round($_.Length / 1MB, 1) + ' MB' }
-          Get-Content dist/SHA256SUMS.txt
+          Get-Content dist/SHA256SUMS-windows.txt
 
       - uses: actions/upload-artifact@v4
         with:
           name: ocrgui-windows-x64
           path: |
             dist/*.zip
-            dist/SHA256SUMS.txt
+            dist/SHA256SUMS-windows.txt
           if-no-files-found: error
           retention-days: 30
 
-      - name: 发布到 GitHub Release
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.publish_release }}
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $tag = if ($env:GITHUB_REF -like 'refs/tags/*') { $env:GITHUB_REF -replace '^refs/tags/', '' } else { 'ci-' + $env:GITHUB_RUN_NUMBER }
-          $zip = Get-ChildItem dist -Filter *.zip | Select-Object -First 1
-          gh release view $tag *> $null
-          if ($LASTEXITCODE -ne 0) { gh release create $tag --title $tag --notes "自动构建 $tag" }
-          gh release upload $tag $zip.FullName dist/SHA256SUMS.txt --clobber
-
   # ------------------------------------------------------------------
-  # Linux / macOS：目前代码里 WinHTTP、Win32 文件对话框、字体枚举、
-  # .rc 图标都是 Windows 专有，这里只做“能不能配置/编译”的探测，失败不拦 CI。
-  # 移植清单见 docs/CROSS_PLATFORM.md，移植完成后把 continue-on-error 去掉即可。
+  # Linux x64（GCC / libcurl / OpenSSL / 系统 CJK 字体）
   # ------------------------------------------------------------------
-  unix-probe:
-    name: ${{ matrix.os }}（实验性：尚未移植）
-    runs-on: ${{ matrix.os }}
-    continue-on-error: true
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
+  linux:
+    name: Linux x64 (GCC)
+    needs: version
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: 安装系统依赖
-        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libcurl4-openssl-dev libfontconfig1-dev libgl1-mesa-dev xorg-dev
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config \
+            libcurl4-openssl-dev libssl-dev \
+            libfontconfig1-dev libgl1-mesa-dev libglu1-mesa-dev xorg-dev \
+            fonts-noto-cjk
+
+      - name: 缓存 ONNX Runtime
+        uses: actions/cache@v4
+        with:
+          path: third_party/onnxruntime-linux-x64-${{ env.ORT_VERSION }}
+          key: ort-linux-x64-${{ env.ORT_VERSION }}
+
+      - name: 缓存 MuPDF
+        uses: actions/cache@v4
+        with:
+          path: third_party/mupdf-${{ env.MUPDF_VERSION }}
+          key: mupdf-linux-x64-${{ env.MUPDF_VERSION }}-v1
+
+      - name: 准备依赖（ONNX Runtime + MuPDF 静态库）
+        run: bash tools/fetch_deps_linux.sh
 
       - name: CMake 配置
-        continue-on-error: true
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 
-      - name: 编译
-        continue-on-error: true
+      - name: 构建
         run: cmake --build build --parallel 4
 
-      - name: 说明
+      - name: 冒烟测试（无显示服务器，只跑 CLI）
         run: |
-          echo "::warning file=docs/CROSS_PLATFORM.md::当前代码仅支持 Windows，Linux/macOS 需要先完成移植（见 docs/CROSS_PLATFORM.md）"
+          ./build/ocrgui --version
+          ./build/ocrgui --help >/dev/null
+
+      - name: 打包
+        run: |
+          models="${{ inputs.models }}"
+          [[ -z "$models" ]] && models=none
+          bash tools/package_linux.sh --build-dir build --models "$models"
+          cp dist/SHA256SUMS.txt dist/SHA256SUMS-linux.txt
+
+      - name: 显示产物
+        run: |
+          ls -lh dist/*.tar.gz
+          cat dist/SHA256SUMS-linux.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ocrgui-linux-x64
+          path: |
+            dist/*.tar.gz
+            dist/SHA256SUMS-linux.txt
+          if-no-files-found: error
+          retention-days: 30
+
+  # ------------------------------------------------------------------
+  # macOS：仅探测（macOS 支持延后，失败不阻塞）
+  # ------------------------------------------------------------------
+  macos-probe:
+    name: macOS（实验性，失败不阻塞）
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: 说明
+        run: echo "::warning file=docs/CROSS_PLATFORM.md::macOS 支持尚未完成，这里只做编译探测"
+      - name: CMake 配置（探测）
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release || true
+      - name: 构建（探测）
+        run: cmake --build build --parallel 4 || true
+
+  # ------------------------------------------------------------------
+  # 发布：Windows + Linux 产物统一发到一个 Release
+  # ------------------------------------------------------------------
+  release:
+    name: Publish GitHub Release
+    needs: [version, windows, linux]
+    if: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.publish_release }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: 汇总校验和
+        run: |
+          cd artifacts
+          cat SHA256SUMS-windows.txt SHA256SUMS-linux.txt > SHA256SUMS.txt
+          ls -lh
+
+      - name: 发布
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ver="$(head -n1 VERSION | tr -d '[:space:]')"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            tag="${GITHUB_REF#refs/tags/}"
+          else
+            tag="v$ver"
+          fi
+          cat > notes.md <<EOF
+          ocrgui $ver
+
+          - Windows x64: MSVC 构建，含 onnxruntime.dll
+          - Linux x64: GCC 构建，含 libonnxruntime.so
+          - 模型默认不打包，首次运行会自动下载，或用 --fetch-models 预取
+          - 许可：AGPL-3.0（见 LICENSE / THIRD_PARTY_NOTICES.md）
+          EOF
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --title "ocrgui $ver" --notes-file notes.md
+          fi
+          gh release upload "$tag" artifacts/*.zip artifacts/*.tar.gz artifacts/SHA256SUMS.txt --clobber

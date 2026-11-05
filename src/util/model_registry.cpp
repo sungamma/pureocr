@@ -1,13 +1,18 @@
 #include "util/model_registry.h"
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
 #include <windows.h>
+#endif
 
 #include "util/utf8_io.h"
+#include "util/platform.h"
 
 namespace util {
 namespace {
@@ -109,12 +114,13 @@ void ApplyIni(const std::string& iniPath, std::vector<ModelFile>* list) {
         else if (key == "alt_url" || key == "mirror") cur->altUrl = val;
         else if (key == "label") cur->label = val;
         else if (key == "kind") cur->kind = val;
-        else if (key == "size") cur->size = _strtoi64(val.c_str(), nullptr, 10);
+        else if (key == "size") cur->size = static_cast<long long>(std::strtoll(val.c_str(), nullptr, 10));
         else if (key == "sha256") cur->sha256 = val;
     }
 }
 
 bool DirWritable(const std::string& dir) {
+#ifdef _WIN32
     const std::wstring w = Utf8ToWide(dir);
     if (w.empty()) return false;
     if (!CreateDirectoryW(w.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) return false;
@@ -124,6 +130,15 @@ bool DirWritable(const std::string& dir) {
     if (h == INVALID_HANDLE_VALUE) return false;
     CloseHandle(h);
     return true;
+#else
+    if (!util::MakeDirs(dir)) return false;
+    const std::string probe = dir + "/.write-test";
+    FILE* f = std::fopen(probe.c_str(), "wb");
+    if (!f) return false;
+    std::fclose(f);
+    std::remove(probe.c_str());
+    return true;
+#endif
 }
 
 }  // namespace
@@ -132,10 +147,11 @@ std::string JoinPath(const std::string& dir, const std::string& name) {
     if (dir.empty()) return name;
     const char last = dir.back();
     if (last == '\\' || last == '/') return dir + name;
-    return dir + "\\" + name;
+    return dir + "/" + name;
 }
 
 bool FileReady(const std::string& path) {
+#ifdef _WIN32
     const std::wstring w = Utf8ToWide(path);
     if (w.empty()) return false;
     WIN32_FILE_ATTRIBUTE_DATA fad;
@@ -143,6 +159,11 @@ bool FileReady(const std::string& path) {
     if (!GetFileAttributesExW(w.c_str(), GetFileExInfoStandard, &fad)) return false;
     if (fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) return false;
     return (static_cast<std::int64_t>(fad.nFileSizeHigh) << 32 | fad.nFileSizeLow) > 0;
+#else
+    std::error_code ec;
+    const auto sz = std::filesystem::file_size(std::filesystem::u8path(path), ec);
+    return !ec && sz > 0;
+#endif
 }
 
 std::vector<ModelFile> LoadModelRegistry(const std::string& modelDir) {
@@ -162,14 +183,11 @@ std::string ResolveModelDir(const std::string& preferred) {
     if (!preferred.empty() && DirWritable(preferred)) return preferred;
 
     std::string base;
-    wchar_t* env = nullptr;
-    size_t envLen = 0;
-    if (_wdupenv_s(&env, &envLen, L"LOCALAPPDATA") == 0 && env) {
-        base = WideToUtf8(env);
-        std::free(env);
-    }
+    base = util::GetEnv("LOCALAPPDATA");
+    if (base.empty()) base = util::GetEnv("XDG_DATA_HOME");
+    if (base.empty()) base = util::GetEnv("HOME");
     if (base.empty()) base = preferred;
-    const std::string dir = JoinPath(base, "ocrgui\\models");
+    const std::string dir = JoinPath(base, "ocrgui/models");
     if (DirWritable(dir)) return dir;
     return preferred;
 }
