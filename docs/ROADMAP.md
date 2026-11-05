@@ -7,11 +7,11 @@
 
 | 项 | 值 |
 |---|---|
-| 仓库 | `D:\Dropbox\14.repo\git\c++_learn`（`ocr-gui/` 子目录） |
+| 仓库 | `D:\Dropbox\14.repo\git\c++_learn`（项目根目录） |
 | 定位 | Dear ImGui 桌面界面 + 命令行双入口；OCR 引擎为 ONNX Runtime 上的 PP-OCR（RapidOCR 同款流程） |
 | 构建目录 | `C:\Users\xwtal\build\ocrgui`（**必须在 Dropbox 之外**，否则编译/链接报文件占用） |
 | 产物 | `C:\Users\xwtal\build\ocrgui\Release\ocrgui.exe` |
-| 模型 | `ocr-gui\models`（不入库）：v3 / v4 / v5 移动版 + 方向分类 + `ppocrv5_dict.txt + v5 服务器版（`--preset v5s`） |
+| 模型 | `models\`（不入库）：v3 / v4 / v5 移动版 + 方向分类 + `ppocrv5_dict.txt + v5 服务器版（`--preset v5s`） |
 | 测试样本 | `D:\Dropbox\14.repo\git\script\ocr\test\样本10页.pdf`（**不入库**） |
 | 机器 | Windows 11 / 16 核 / 32 GB / **无 NVIDIA 显卡** |
 
@@ -20,7 +20,7 @@
 ```powershell
 cmake --build C:\Users\xwtal\build\ocrgui --config Release
 # 首次或改 CMakeLists 后：
-cmake -S .\ocr-gui -B C:\Users\xwtal\build\ocrgui -G "Visual Studio 17 2022" -A x64
+cmake -S . -B C:\Users\xwtal\build\ocrgui -G "Visual Studio 17 2022" -A x64
 ocrgui.exe --fetch-models            # 拉 v3/v4/v5（缺的自动从 HF 下载）
 ocrgui.exe --fetch-models --preset v5s   # 额外拉 v4 服务器版
 ```

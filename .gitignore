@@ -28,7 +28,7 @@ third_party/*
 !third_party/onnxruntime-win-x64-1.20.1/GIT_COMMIT_ID
 
 # 模型文件（onnx）不入库：Apache-2.0、约 212 MB，首次运行或 --fetch-models 下载
-ocr-gui/models/*.onnx
+models/*.onnx
 
 # IDE
 .vs/

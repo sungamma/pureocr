@@ -31,11 +31,6 @@ concurrency:
 env:
   ORT_VERSION: '1.20.1'
   MUPDF_VERSION: '1.25.0'
-  PROJECT_DIR: ocr-gui
-
-defaults:
-  run:
-    working-directory: ocr-gui
 
 jobs:
   # ------------------------------------------------------------------
@@ -92,8 +87,8 @@ jobs:
         with:
           name: ocrgui-windows-x64
           path: |
-            ocr-gui/dist/*.zip
-            ocr-gui/dist/SHA256SUMS.txt
+            dist/*.zip
+            dist/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 30
 
@@ -141,4 +136,4 @@ jobs:
 
       - name: 说明
         run: |
-          echo "::warning file=${{ env.PROJECT_DIR }}/docs/CROSS_PLATFORM.md::当前代码仅支持 Windows，Linux/macOS 需要先完成移植（见 docs/CROSS_PLATFORM.md）"
+          echo "::warning file=docs/CROSS_PLATFORM.md::当前代码仅支持 Windows，Linux/macOS 需要先完成移植（见 docs/CROSS_PLATFORM.md）"

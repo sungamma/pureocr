@@ -44,7 +44,7 @@ try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
 function Write-Step([string]$Message) { Write-Host ''; Write-Host "==> $Message" -ForegroundColor Cyan }
 function Write-Detail([string]$Message) { Write-Host "    $Message" }
 
-if ([string]::IsNullOrWhiteSpace($MupdfDir)) { $MupdfDir = Join-Path $PSScriptRoot '..\..\third_party\mupdf-1.25.0' }
+if ([string]::IsNullOrWhiteSpace($MupdfDir)) { $MupdfDir = Join-Path $PSScriptRoot '..\third_party\mupdf-1.25.0' }
 $MupdfDir = (Resolve-Path -LiteralPath $MupdfDir).Path
 $srcLib = Join-Path $MupdfDir 'lib\libmupdf.lib'
 $dstLib = Join-Path $MupdfDir 'lib\libmupdf-slim.lib'

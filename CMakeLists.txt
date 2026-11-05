@@ -10,7 +10,7 @@ if (MSVC)
 endif()
 
 # ---------- 第三方依赖 ----------
-set(ORT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/onnxruntime-win-x64-1.20.1" CACHE PATH "ONNX Runtime 目录")
+set(ORT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/onnxruntime-win-x64-1.20.1" CACHE PATH "ONNX Runtime 目录")
 
 include(FetchContent)
 
@@ -48,7 +48,7 @@ target_include_directories(imgui_backend PUBLIC
 target_link_libraries(imgui_backend PUBLIC glfw)
 
 # ---------- 主程序 ----------
-set(MUPDF_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/mupdf-1.25.0" CACHE PATH "MuPDF 目录")
+set(MUPDF_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/mupdf-1.25.0" CACHE PATH "MuPDF 目录")
 
 # MuPDF 内嵌 CJK 字体占 32 MB，slim 库由 tools/slim_mupdf.ps1 生成
 option(OCR_MUPDF_SLIM "Use libmupdf-slim.lib (embedded CJK fonts stripped, system fonts instead)" ON)

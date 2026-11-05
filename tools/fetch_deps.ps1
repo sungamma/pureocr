@@ -15,7 +15,7 @@
     GLFW / Dear ImGui 由 CMake 的 FetchContent 在配置阶段拉取，这里不处理。
 
 .PARAMETER Root
-    依赖根目录，默认 ..\..\third_party（即 Git 仓库根目录下的 third_party）
+    依赖根目录，默认 ..\third_party（即仓库根目录下的 third_party）
 
 .PARAMETER Force
     已存在的依赖也重新下载 / 重新编译
@@ -52,7 +52,7 @@ function Write-Step([string]$Message) { Write-Host ''; Write-Host "==> $Message"
 function Write-Detail([string]$Message) { Write-Host "    $Message" }
 function Write-WarnMsg([string]$Message) { Write-Host "    [警告] $Message" -ForegroundColor Yellow }
 
-if ([string]::IsNullOrWhiteSpace($Root)) { $Root = Join-Path $PSScriptRoot '..\..\third_party' }
+if ([string]::IsNullOrWhiteSpace($Root)) { $Root = Join-Path $PSScriptRoot '..\third_party' }
 $Root = [IO.Path]::GetFullPath($Root)
 New-Item -ItemType Directory -Path $Root -Force | Out-Null
 New-Item -ItemType Directory -Path $DownloadDir -Force | Out-Null

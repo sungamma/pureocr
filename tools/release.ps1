@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    ocr-gui 一键发布脚本：编译 Release 并打包成可直接分发的 zip。
+    一键发布脚本：编译 Release 并打包成可直接分发的 zip。
 
 .DESCRIPTION
     流程：
@@ -11,20 +11,20 @@
       5. 调用 tools\package.ps1 组装发布目录
       6. 压缩 zip 并生成 SHA256 校验文件
 
-    构建目录默认在仓库内（<ocr-gui>\build），打包完成后会自动删掉这个临时目录，
+    构建目录默认在仓库内（<仓库根>\build），打包完成后会自动删掉这个临时目录，
     下次发布就是全新配置；想留着增量编译用 -KeepBuild。
 
 .PARAMETER Version
     发布版本号，默认当天日期 yyyyMMdd。例：-Version 1.0.0 -> ocrgui-1.0.0.zip
 
 .PARAMETER BuildDir
-    CMake 构建目录，默认 <ocr-gui>\build；发布完成后会被删除（-KeepBuild 可保留）。
+    CMake 构建目录，默认 <仓库根>\build；发布完成后会被删除（-KeepBuild 可保留）。
 
 .PARAMETER KeepBuild
     保留构建目录（默认发布成功后删除，保持工作区干净）。
 
 .PARAMETER OutDir
-    发布产物目录，默认 <ocr-gui>\dist。
+    发布产物目录，默认 <仓库根>\dist。
 
 .EXAMPLE
     pwsh -NoProfile -File tools\release.ps1 -Clean
@@ -65,8 +65,7 @@ function Write-WarnMsg([string]$Message) { Write-Host "    [警告] $Message" -F
 # ---------------- 路径 ----------------
 $scriptDir  = $PSScriptRoot
 $srcDir     = (Resolve-Path (Join-Path $scriptDir '..')).Path
-$repoRoot   = (Resolve-Path (Join-Path $srcDir '..')).Path
-$thirdParty = Join-Path $repoRoot 'third_party'
+$thirdParty = Join-Path $srcDir 'third_party'
 $modelsDir  = Join-Path $srcDir 'models'
 if ([string]::IsNullOrWhiteSpace($OutDir)) { $OutDir = Join-Path $srcDir 'dist' }
 $BuildDir = [IO.Path]::GetFullPath($BuildDir)   # 去掉 .. 之类的相对片段，便于显示和删除
@@ -185,7 +184,7 @@ function Test-SafeToRemove([string]$Path) {
     $full = [IO.Path]::GetFullPath($Path).TrimEnd('\')
     $root = [IO.Path]::GetPathRoot($full).TrimEnd('\')
     if ($full.Length -le $root.Length + 1) { return $false }
-    foreach ($p in @($srcDir, $repoRoot, $env:USERPROFILE, $env:APPDATA)) {
+    foreach ($p in @($srcDir, $env:USERPROFILE, $env:APPDATA)) {
         if ([string]::IsNullOrWhiteSpace($p)) { continue }
         $p = $p.TrimEnd('\')
         if ($full -eq $p) { return $false }

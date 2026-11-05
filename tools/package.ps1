@@ -13,7 +13,7 @@
     run-cli.ps1          命令行示例
 
 .EXAMPLE
-  pwsh -NoProfile -File ocr-gui/tools/package.ps1
+  pwsh -NoProfile -File tools/package.ps1
 #>
 [CmdletBinding()]
 param(
@@ -27,7 +27,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$repoRoot  = Resolve-Path (Join-Path $PSScriptRoot '..\..')
+$repoRoot  = Resolve-Path (Join-Path $PSScriptRoot '..')
 $modelsDir = (Resolve-Path (Join-Path $PSScriptRoot '..\models')).Path
 $exe       = Join-Path $BuildDir 'ocrgui.exe'
 $ortDll    = Join-Path $BuildDir 'onnxruntime.dll'
