@@ -326,7 +326,7 @@ bool ResolveKeys(const PathStr &dir, const std::string &spec,
 }  // namespace
 
 struct Engine::Impl {
-    Ort::Env env{ORT_LOGGING_LEVEL_WARNING, "ocrgui"};
+    Ort::Env env{ORT_LOGGING_LEVEL_WARNING, "pureocr"};
     Model det, cls, rec;
     std::vector<std::string> chars;
     EngineOptions opt;

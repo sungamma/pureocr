@@ -100,7 +100,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ocrgui-windows-x64
+          name: pureocr-windows-x64
           path: |
             dist/*.zip
             dist/SHA256SUMS-windows.txt
@@ -149,8 +149,8 @@ jobs:
 
       - name: 冒烟测试（无显示服务器，只跑 CLI）
         run: |
-          ./build/ocrgui --version
-          ./build/ocrgui --help >/dev/null
+          ./build/pureocr --version
+          ./build/pureocr --help >/dev/null
 
       - name: 打包
         run: |
@@ -166,7 +166,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ocrgui-linux-x64
+          name: pureocr-linux-x64
           path: |
             dist/*.tar.gz
             dist/SHA256SUMS-linux.txt
@@ -222,7 +222,7 @@ jobs:
             tag="v$ver"
           fi
           cat > notes.md <<EOF
-          ocrgui $ver
+          PureOCR $ver
 
           - Windows x64: MSVC 构建，含 onnxruntime.dll
           - Linux x64: GCC 构建，含 libonnxruntime.so
@@ -230,6 +230,6 @@ jobs:
           - 许可：AGPL-3.0（见 LICENSE / THIRD_PARTY_NOTICES.md）
           EOF
           if ! gh release view "$tag" >/dev/null 2>&1; then
-            gh release create "$tag" --title "ocrgui $ver" --notes-file notes.md
+            gh release create "$tag" --title "PureOCR $ver" --notes-file notes.md
           fi
           gh release upload "$tag" artifacts/*.zip artifacts/*.tar.gz artifacts/SHA256SUMS.txt --clobber

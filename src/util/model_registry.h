@@ -31,7 +31,7 @@ std::string JoinPath(const std::string& dir, const std::string& name);
 /// 文件存在且非空。
 bool FileReady(const std::string& path);
 
-/// 保证模型目录可用：优先用 preferred；不存在/不可写时退回 %LOCALAPPDATA%\ocrgui\models。
+/// 保证模型目录可用：优先用 preferred；不存在/不可写时退回 %LOCALAPPDATA%\pureocr\models。
 /// 返回最终可写目录（UTF-8，已创建）。
 std::string ResolveModelDir(const std::string& preferred);
 

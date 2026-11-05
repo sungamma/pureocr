@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""准备 ocr-gui 需要的 PP-OCR 模型（v3 / v4 / v5 + 方向分类 + v5 字典）。
+"""准备 PureOCR 需要的 PP-OCR 模型（v3 / v4 / v5 + 方向分类 + v5 字典）。
 
 优先从 rapidocr_onnxruntime 本地包里拷，缺的从 HuggingFace 下载
 （国内可用 HF_ENDPOINT=https://hf-mirror.com）。

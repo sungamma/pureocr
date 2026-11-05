@@ -187,7 +187,7 @@ std::string ResolveModelDir(const std::string& preferred) {
     if (base.empty()) base = util::GetEnv("XDG_DATA_HOME");
     if (base.empty()) base = util::GetEnv("HOME");
     if (base.empty()) base = preferred;
-    const std::string dir = JoinPath(base, "ocrgui/models");
+    const std::string dir = JoinPath(base, "pureocr/models");
     if (DirWritable(dir)) return dir;
     return preferred;
 }

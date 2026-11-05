@@ -194,7 +194,7 @@ bool LineCacheWriter::Open(const std::string& path, double dpi, const std::strin
         return false;
     }
     if (empty) {
-        std::fprintf(f_, "# ocrgui-cache v1 dpi=%g models=%s\n", dpi, tag.c_str());
+        std::fprintf(f_, "# pureocr-cache v1 dpi=%g models=%s\n", dpi, tag.c_str());
         std::fflush(f_);
     }
     return true;

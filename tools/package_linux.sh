@@ -4,7 +4,7 @@
 # 用法：
 #   bash tools/package_linux.sh [--build-dir DIR] [--out-dir DIR] [--version X.Y.Z] [--models none|basic|full]
 #
-# 产物：dist/ocrgui-<version>-linux-x64.tar.gz（含 ocrgui、libonnxruntime.so、models/、许可与说明）
+# 产物：dist/pureocr-<version>-linux-x64.tar.gz（含 pureocr、libonnxruntime.so、models/、许可与说明）
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -32,12 +32,12 @@ if [[ -z "$VERSION" ]]; then
   exit 1
 fi
 
-BIN="$BUILD_DIR/ocrgui"
+BIN="$BUILD_DIR/pureocr"
 if [[ ! -f "$BIN" ]]; then
-  BIN="$(find "$BUILD_DIR" -maxdepth 3 -type f -name ocrgui -perm -u+x 2>/dev/null | head -n1)"
+  BIN="$(find "$BUILD_DIR" -maxdepth 3 -type f -name pureocr -perm -u+x 2>/dev/null | head -n1)"
 fi
 if [[ -z "${BIN:-}" || ! -f "$BIN" ]]; then
-  echo "找不到 ocrgui 可执行文件（构建目录: $BUILD_DIR）" >&2
+  echo "找不到 pureocr 可执行文件（构建目录: $BUILD_DIR）" >&2
   exit 1
 fi
 
@@ -46,7 +46,7 @@ if [[ ! -f "$ORT_LIB" ]]; then
   ORT_LIB="$(find "$ROOT/third_party" -maxdepth 4 -type f -name libonnxruntime.so 2>/dev/null | head -n1)"
 fi
 
-PKG_NAME="ocrgui-$VERSION-linux-x64"
+PKG_NAME="pureocr-$VERSION-linux-x64"
 PKG_DIR="$OUT_DIR/$PKG_NAME"
 TARBALL="$OUT_DIR/$PKG_NAME.tar.gz"
 
@@ -54,7 +54,7 @@ mkdir -p "$OUT_DIR"
 rm -rf "$PKG_DIR"
 mkdir -p "$PKG_DIR/models"
 
-install -m 0755 "$BIN" "$PKG_DIR/ocrgui"
+install -m 0755 "$BIN" "$PKG_DIR/pureocr"
 if [[ -n "${ORT_LIB:-}" && -f "$ORT_LIB" ]]; then
   install -m 0644 "$ORT_LIB" "$PKG_DIR/libonnxruntime.so"
 else
@@ -83,26 +83,26 @@ esac
 
 cat > "$PKG_DIR/run-cli.sh" <<'EOS'
 #!/usr/bin/env bash
-# 命令行包装：./run-cli.sh --pdf book.pdf [其它 ocrgui 参数]
+# 命令行包装：./run-cli.sh --pdf book.pdf [其它 pureocr 参数]
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec "$HERE/ocrgui" "$@"
+exec "$HERE/pureocr" "$@"
 EOS
 chmod 0755 "$PKG_DIR/run-cli.sh"
 
 cat > "$PKG_DIR/使用说明.txt" <<EOS
-PDF OCR（Linux x64 版）
+PureOCR（Linux x64 版）
 ==========================
 
 运行图形界面：
-  ./ocrgui
+  ./pureocr
 
 命令行（第一次会自动下载缺失模型，或手动放到 models/）：
   ./run-cli.sh --pdf book.pdf
   ./run-cli.sh --pdf book.pdf --pages 1-10 --threads 2
   ./run-cli.sh --dir ./samples --out-dir ./out --recurse
-  ./ocrgui --fetch-models --model-dir ./models     # 预下载模型
-  ./ocrgui --version
+  ./pureocr --fetch-models --model-dir ./models     # 预下载模型
+  ./pureocr --version
 
 运行环境依赖（Debian/Ubuntu）：
   sudo apt-get install -y libgl1 libglx-mesa0 libcurl4 openssl \
@@ -119,7 +119,7 @@ EOS
 
 COMMIT="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 {
-  echo "ocrgui build info"
+  echo "pureocr build info"
   echo "================="
   echo "VERSION  : $VERSION"
   echo "built    : $(date -u '+%Y-%m-%d %H:%M:%S UTC')"

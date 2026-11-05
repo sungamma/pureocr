@@ -11,7 +11,7 @@ from rapidocr_onnxruntime import RapidOCR
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-EXE = os.path.join(os.environ.get("OCRGUI_EXE", r"C:\Users\xwtal\build\ocrgui\Release\ocrgui.exe"))
+EXE = os.path.join(os.environ.get("PUREOCR_EXE", r"C:\Users\xwtal\build\pureocr\Release\pureocr.exe"))
 MODELS = os.path.join(ROOT, "models")
 
 
@@ -30,7 +30,7 @@ def main():
 
     doc = fitz.open(args.pdf)
     pix = doc[args.page - 1].get_pixmap(dpi=args.dpi)
-    tmp = tempfile.mkdtemp(prefix="ocrgui_")
+    tmp = tempfile.mkdtemp(prefix="pureocr_")
     img = os.path.join(tmp, "page.png")
     out = os.path.join(tmp, "cpp.json")
     pix.save(img)

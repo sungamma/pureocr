@@ -91,7 +91,7 @@ Write-Detail "目标   : $dstLib"
 Write-Detail "lib.exe: $libExe"
 
 # lib.exe /REMOVE 要求配 /OUT，输入库本身不被修改；这里仍然在临时目录里操作，避免就地写坏
-$tmpDir = Join-Path ([IO.Path]::GetTempPath()) ('ocrgui-slim-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+$tmpDir = Join-Path ([IO.Path]::GetTempPath()) ('pureocr-slim-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
 $workLib = Join-Path $tmpDir 'libmupdf-work.lib'
 $outLib = Join-Path $tmpDir 'libmupdf-slim.lib'

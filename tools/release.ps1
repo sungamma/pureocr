@@ -15,7 +15,7 @@
     下次发布就是全新配置；想留着增量编译用 -KeepBuild。
 
 .PARAMETER Version
-    发布版本号，默认当天日期 yyyyMMdd。例：-Version 1.0.0 -> ocrgui-1.0.0.zip
+    发布版本号，默认当天日期 yyyyMMdd。例：-Version 1.0.0 -> pureocr-1.0.0.zip
 
 .PARAMETER BuildDir
     CMake 构建目录，默认 <仓库根>\build；发布完成后会被删除（-KeepBuild 可保留）。
@@ -77,7 +77,7 @@ $OutDir   = [IO.Path]::GetFullPath($OutDir)
 $tempRoot = [IO.Path]::GetFullPath($env:TEMP).TrimEnd('\\')
 $cloudHint = $BuildDir -match '(?i)\\(Dropbox|OneDrive|GoogleDrive|iCloudDrive|Nutstore|坚果云|百度网盘)\\'
 if (-not $BuildDir.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase) -and $cloudHint) {
-    $tempBuild = [IO.Path]::GetFullPath((Join-Path $env:TEMP 'ocrgui-build'))
+    $tempBuild = [IO.Path]::GetFullPath((Join-Path $env:TEMP 'pureocr-build'))
     Write-WarnMsg "构建目录在云同步盘里，MSVC 容易报 C1090/写 tlog 失败；改用 $tempBuild"
     $BuildDir = $tempBuild
 }
@@ -192,7 +192,7 @@ if (-not $SkipPackage) {
         $onnx = @(Get-ChildItem -LiteralPath $modelsDir -Filter '*.onnx' -File -ErrorAction SilentlyContinue)
     }
     if ($onnx.Count -eq 0 -and $Models -ne 'none') {
-        throw "模型目录 $modelsDir 里没有 .onnx 文件：先用 ocrgui.exe --fetch-models 下载，或把 -Models 改成 none"
+        throw "模型目录 $modelsDir 里没有 .onnx 文件：先用 pureocr.exe --fetch-models 下载，或把 -Models 改成 none"
     }
     $modelMb = [math]::Round((($onnx | Measure-Object Length -Sum).Sum / 1MB), 1)
     Write-Detail "模型         : $($onnx.Count) 个 onnx（$modelMb MB）"
@@ -270,7 +270,7 @@ if (-not $SkipBuild) {
     $inTemp = $BuildDir.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase)
     if ($cfgExit -ne 0 -and -not $inTemp -and
         $cfgText -match 'C1090|PDB API|not able to compile a simple test program|CMakeTestCXXCompiler') {
-        $fallbackBuild = Join-Path $env:TEMP 'ocrgui-build'
+        $fallbackBuild = Join-Path $env:TEMP 'pureocr-build'
         Write-WarnMsg "构建目录在同步盘里导致 MSVC 报错（PDB/编译器探针），改用临时构建目录：$fallbackBuild"
         $fallbackBuild = [IO.Path]::GetFullPath($fallbackBuild)
         if (Test-Path -LiteralPath $fallbackBuild) { Remove-DirectoryWithRetry $fallbackBuild | Out-Null }
@@ -297,19 +297,19 @@ if (-not $SkipBuild) {
 # ---------------- 定位产物 ----------------
 Write-Step '定位产物'
 $exe = $null
-foreach ($cand in @((Join-Path $BuildDir "$Config\ocrgui.exe"), (Join-Path $BuildDir 'ocrgui.exe'))) {
+foreach ($cand in @((Join-Path $BuildDir "$Config\pureocr.exe"), (Join-Path $BuildDir 'pureocr.exe'))) {
     if (Test-Path -LiteralPath $cand) { $exe = (Resolve-Path -LiteralPath $cand).Path; break }
 }
 if (-not $exe) {
-    $found = Get-ChildItem -LiteralPath $BuildDir -Filter 'ocrgui.exe' -File -Recurse -ErrorAction SilentlyContinue |
+    $found = Get-ChildItem -LiteralPath $BuildDir -Filter 'pureocr.exe' -File -Recurse -ErrorAction SilentlyContinue |
              Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if ($found) { $exe = $found.FullName }
 }
-if (-not $exe) { throw "在 $BuildDir 下找不到 ocrgui.exe，请先编译（不要用 -SkipBuild）。" }
+if (-not $exe) { throw "在 $BuildDir 下找不到 pureocr.exe，请先编译（不要用 -SkipBuild）。" }
 
 $exeDir = Split-Path -Parent $exe
 $exeItem = Get-Item -LiteralPath $exe
-Write-Detail "ocrgui.exe : $exe"
+Write-Detail "pureocr.exe : $exe"
 Write-Detail "大小       : $([math]::Round($exeItem.Length / 1MB, 1)) MB，时间 $($exeItem.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss'))"
 
 if (-not (Test-Path -LiteralPath (Join-Path $exeDir 'onnxruntime.dll'))) {
@@ -324,7 +324,7 @@ if (-not $Version) {
 }
 if (-not $Version) { $Version = Get-Date -Format 'yyyyMMdd' }
 $stamp   = $Version
-$pkgName = "ocrgui-$stamp-win-x64"
+$pkgName = "pureocr-$stamp-win-x64"
 $pkgDir  = Join-Path $OutDir $pkgName
 $zip     = Join-Path $OutDir "$pkgName.zip"
 

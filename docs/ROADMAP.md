@@ -1,4 +1,4 @@
-# ocr-gui 开发路线与交接备忘
+# PureOCR 开发路线与交接备忘
 
 > 最后更新：2026-11-02　分支：`c++_learn` / `main`
 > 用途：换一个窗口/目录继续开发时，先读这份文档即可接上上下文。
@@ -9,8 +9,8 @@
 |---|---|
 | 仓库 | `D:\Dropbox\14.repo\git\c++_learn`（项目根目录） |
 | 定位 | Dear ImGui 桌面界面 + 命令行双入口；OCR 引擎为 ONNX Runtime 上的 PP-OCR（RapidOCR 同款流程） |
-| 构建目录 | `C:\Users\xwtal\build\ocrgui`（**必须在 Dropbox 之外**，否则编译/链接报文件占用） |
-| 产物 | `C:\Users\xwtal\build\ocrgui\Release\ocrgui.exe` |
+| 构建目录 | `C:\Users\xwtal\build\pureocr`（**必须在 Dropbox 之外**，否则编译/链接报文件占用） |
+| 产物 | `C:\Users\xwtal\build\pureocr\Release\pureocr.exe` |
 | 模型 | `models\`（不入库）：v3 / v4 / v5 移动版 + 方向分类 + `ppocrv5_dict.txt + v5 服务器版（`--preset v5s`） |
 | 测试样本 | `D:\Dropbox\14.repo\git\script\ocr\test\样本10页.pdf`（**不入库**） |
 | 机器 | Windows 11 / 16 核 / 32 GB / **无 NVIDIA 显卡** |
@@ -18,11 +18,11 @@
 ### 构建与运行
 
 ```powershell
-cmake --build C:\Users\xwtal\build\ocrgui --config Release
+cmake --build C:\Users\xwtal\build\pureocr --config Release
 # 首次或改 CMakeLists 后：
-cmake -S . -B C:\Users\xwtal\build\ocrgui -G "Visual Studio 17 2022" -A x64
-ocrgui.exe --fetch-models            # 拉 v3/v4/v5（缺的自动从 HF 下载）
-ocrgui.exe --fetch-models --preset v5s   # 额外拉 v4 服务器版
+cmake -S . -B C:\Users\xwtal\build\pureocr -G "Visual Studio 17 2022" -A x64
+pureocr.exe --fetch-models            # 拉 v3/v4/v5（缺的自动从 HF 下载）
+pureocr.exe --fetch-models --preset v5s   # 额外拉 v4 服务器版
 ```
 
 exe 是 **GUI 子系统**，PowerShell 里 `&` 不会等待，必须：
@@ -34,7 +34,7 @@ Start-Process -Wait -WindowStyle Hidden -FilePath $exe -ArgumentList @('--pdf', 
 ### 命令行参数
 
 ```
-ocrgui --pdf <in.pdf> [--out-pdf <out.pdf>] [--dpi 300] [--threads 2]
+pureocr --pdf <in.pdf> [--out-pdf <out.pdf>] [--dpi 300] [--threads 2]
        [--pages 1-10,15] [--font <ttf>] [--mask] [--min-score 0.55]
        [--csv <导出.csv>] [--review-score 0.75] [--resume] [--cache <缓存.tsv>]
        [--preset auto|v5|v5s|v4|v4s|v3] [--det-model <文件名|绝对路径>]
@@ -42,10 +42,10 @@ ocrgui --pdf <in.pdf> [--out-pdf <out.pdf>] [--dpi 300] [--threads 2]
        [--merge-gap 0.8]   # 同行碎片合并阈值（×行高），0 = 关闭
        [--model-dir <模型目录>] [--log <日志文件>]
        # 省略 --out-pdf 时输出为 <原名>_OCR.pdf
-ocrgui --pdf <目录>（也可 --dir / -f） [--out-dir <输出目录>] [--recurse|-r] [--overwrite]
+pureocr --pdf <目录>（也可 --dir / -f） [--out-dir <输出目录>] [--recurse|-r] [--overwrite]
        # 批量：目录下所有 PDF -> <原名>_OCR.pdf
        # 跳过 *_OCR.pdf 本身，以及已存在 <原名>_OCR.pdf 的原文件（源目录/输出目录都算）
-ocrgui --image <图片> [--out <json>] [--dump-crops <目录>] [--threads N]
+pureocr --image <图片> [--out <json>] [--dump-crops <目录>] [--threads N]
 ```
 
 ## 2. 已完成
@@ -123,7 +123,7 @@ ocrgui --image <图片> [--out <json>] [--dump-crops <目录>] [--threads N]
 
 - 拖拽打开：`glfwSetDropCallback`，只认 `.pdf`，顺手填好默认输出路径
 - 主题切换：OCR 页签「深色主题」复选框，`ApplyTheme()` 立即生效，`glClearColor` 跟随主题
-- 参数记忆：`%LOCALAPPDATA%\ocrgui\settings.ini`，记住输入/输出、模型目录、DPI、线程、`--min-score`、复核阈值、预设、合并开关、页码、主题（开跑与退出时各存一次）
+- 参数记忆：`%LOCALAPPDATA%\pureocr\settings.ini`，记住输入/输出、模型目录、DPI、线程、`--min-score`、复核阈值、预设、合并开关、页码、主题（开跑与退出时各存一次）
 - 复核回灌：GUI「回灌复核 CSV」按钮 / CLI `--fix-csv <csv>`，按 `page`+`line` 覆盖文字（缓存页同样生效），配合 `--resume` 秒出
 - 实测：2 页 v5 合并后 **87 行**（`--merge-gap 0` 为 125 行）；10 页 v5 637 行；CSV 回灌 2 行后复导出为修正值
 

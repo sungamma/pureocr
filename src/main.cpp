@@ -1,4 +1,4 @@
-// ocr-gui：无参数启动 GUI；有参数走 CLI（--pdf / --image ...）
+// PureOCR：无参数启动 GUI；有参数走 CLI（--pdf / --image ...）
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
@@ -43,7 +43,7 @@
 #include "util/model_download.h"
 #include "util/model_registry.h"
 #include "cli.h"
-#ifdef OCRGUI_HAS_MUPDF
+#ifdef PUREOCR_HAS_MUPDF
 #include "pdf/doc.h"
 #include "pdf/lines_io.h"
 #include "pdf/ocr_pages.h"
@@ -72,7 +72,7 @@ double g_lastDpi = 300.0;
 int g_threads = 2;
 int g_dpi = 300;
 bool g_switchToPreview = false;
-#ifdef OCRGUI_SELFTEST
+#ifdef PUREOCR_SELFTEST
 bool g_selfTest = false;
 std::string g_shotPath;   // --shot <png>：渲染几帧后抓图（调试布局用）
 int g_shotFrame = -1;
@@ -118,7 +118,7 @@ const ocr::ModelPreset *CurrentPreset() {
 }
 std::chrono::steady_clock::time_point g_startTime;
 
-#ifdef OCRGUI_HAS_MUPDF
+#ifdef PUREOCR_HAS_MUPDF
 pdf::PagePreview g_preview;
 int g_previewPage = 0;
 float g_previewDpi = 120.0f;
@@ -248,13 +248,13 @@ std::string OcrFontPath() {
     return kCandidates[0];
 }
 
-/// Windows: %LOCALAPPDATA%\\ocrgui\\settings.ini；Linux: $XDG_CONFIG_HOME/ocrgui/settings.ini
+/// Windows: %LOCALAPPDATA%\\pureocr\\settings.ini；Linux: $XDG_CONFIG_HOME/pureocr/settings.ini
 std::string SettingsPath() {
     std::string dir = util::GetEnv("LOCALAPPDATA");
     if (dir.empty()) dir = util::GetEnv("XDG_CONFIG_HOME");
     if (dir.empty()) dir = util::GetEnv("HOME");
     if (dir.empty()) dir = ExeDir();
-    const std::string cfgDir = dir + "/ocrgui";
+    const std::string cfgDir = dir + "/pureocr";
     util::MakeDirs(cfgDir);
     return cfgDir + "/settings.ini";
 }
@@ -328,7 +328,7 @@ void SaveSettings() {
     FILE* f = util::OpenUtf8(path, L"wb");
     if (!f) return;
     const ocr::ModelPreset* mp = CurrentPreset();
-    std::fprintf(f, "# ocrgui 设置（自动生成，可删）\n");
+    std::fprintf(f, "# PureOCR 设置（自动生成，可删）\n");
     std::fprintf(f, "input=%s\n", g_pdfPath.c_str());
     std::fprintf(f, "output=%s\n", g_outPath.c_str());
     std::fprintf(f, "model_dir=%s\n", g_modelDir.c_str());
@@ -649,7 +649,7 @@ void StartModelDownload() {
 }
 
 void StartOcr() {
-#ifdef OCRGUI_HAS_MUPDF
+#ifdef PUREOCR_HAS_MUPDF
     if (g_running) return;
     {
         const std::vector<util::ModelFile> need = MissingModels();
@@ -663,7 +663,7 @@ void StartOcr() {
     g_donePages = 0;
     g_totalPages = 0;
     g_startTime = std::chrono::steady_clock::now();
-#ifdef OCRGUI_HAS_MUPDF
+#ifdef PUREOCR_HAS_MUPDF
     g_pageLines.clear();
 #endif
     {
@@ -674,7 +674,7 @@ void StartOcr() {
     // 上一轮的线程对象必须先 join 掉：给 joinable 的 std::thread 赋值会直接
     // std::terminate（症状就是「第一次跑完，再点开始就闪退」）
     if (g_worker.joinable()) g_worker.join();
-#ifdef OCRGUI_HAS_MUPDF
+#ifdef PUREOCR_HAS_MUPDF
     g_preview.Close();  // 释放上一轮对输出 PDF 的只读句柄，避免写同名文件被占用
     g_texPath.clear();
     g_texPage = -1;
@@ -750,7 +750,7 @@ void StartOcr() {
                     PushLog(buf);
                 },
                 &stats, &err);
-#ifdef OCRGUI_HAS_MUPDF
+#ifdef PUREOCR_HAS_MUPDF
             if (ok && !g_batchMode) {
                 std::lock_guard<std::mutex> lk(g_mutex);
                 g_pageLines = std::move(stats.pageLines);
@@ -864,7 +864,7 @@ std::string ResultText() {
     return g_result;
 }
 
-#ifdef OCRGUI_HAS_MUPDF
+#ifdef PUREOCR_HAS_MUPDF
 /// 只读文档页数（同一路径只解析一次）；用于界面上显示「共 N 页」
 int PageCountForPath(const std::string& path) {
     static std::string cachedPath;
@@ -881,7 +881,7 @@ int PageCountForPath(const std::string& path) {
 }
 #endif
 
-#ifdef OCRGUI_SELFTEST
+#ifdef PUREOCR_SELFTEST
 // 离屏抓图用到的 3 个 FBO 入口（主程序不链接 GL loader，这里现取）
 // GL 1.1 头里没有 FBO 常量，补上
 #ifndef GL_FRAMEBUFFER
@@ -954,7 +954,7 @@ void MaybeCaptureShot(int w, int h) {
     glfwSetWindowShouldClose(glfwGetCurrentContext(), 1);
 }
 
-// ---- 仅测试用（cmake -DCMAKE_CXX_FLAGS=/DOCRGUI_SELFTEST）：自动连跑两轮识别 ----
+// ---- 仅测试用（cmake -DCMAKE_CXX_FLAGS=/DPUREOCR_SELFTEST）：自动连跑两轮识别 ----
 bool g_selfTestOk = false;
 
 void SelfTestStep(GLFWwindow* window) {
@@ -1094,7 +1094,7 @@ void DrawSidebar() {
         ImGui::SameLine(0.0f, 12.0f * s);
         ImGui::BeginGroup();
         if (g_fontTitle) ImGui::PushFont(g_fontTitle);
-        ImGui::TextUnformatted("PDF OCR");
+        ImGui::TextUnformatted("PureOCR");
         if (g_fontTitle) ImGui::PopFont();
         ImGui::TextColored(MutedColor(), "扫描版 PDF → 可搜索文字");
         ImGui::EndGroup();
@@ -1192,7 +1192,7 @@ void DrawSidebar() {
         if (ImGui::InputTextWithHint("##pages", "留空 = 全部，例 1-10,15", pageBuf, sizeof(pageBuf))) {
             g_pageSpec = pageBuf;
         }
-#ifdef OCRGUI_HAS_MUPDF
+#ifdef PUREOCR_HAS_MUPDF
         if (batchInput) {
             const int n = BatchPdfCount(g_pdfPath, g_recurse);
             ImGui::TextColored(MutedColor(), "共 %d 个 PDF%s，全部处理", n,
@@ -1392,7 +1392,7 @@ void DrawSidebar() {
     ImGui::Dummy(ImVec2(0, 8.0f * s));
     DrawLogPane(std::max(120.0f * s, ImGui::GetContentRegionAvail().y));
 }
-#ifdef OCRGUI_HAS_MUPDF
+#ifdef PUREOCR_HAS_MUPDF
 void UploadTexture(const std::vector<unsigned char>& rgba, int w, int h) {
     if (!g_tex) glGenTextures(1, &g_tex);
     glBindTexture(GL_TEXTURE_2D, g_tex);
@@ -1703,7 +1703,7 @@ int RunGui() {
     if (winW < 900) winW = 900;
     if (winH < 620) winH = 620;
     const std::string windowTitle =
-        std::string("PDF OCR ") + OCRGUI_VERSION_STRING + " - 扫描 PDF 转可复制文字";
+        std::string("PureOCR ") + PUREOCR_VERSION_STRING + " - 扫描 PDF 转可复制文字";
     GLFWwindow* window = glfwCreateWindow(winW, winH, windowTitle.c_str(), nullptr, nullptr);
     if (!window) {
         glfwTerminate();
@@ -1741,12 +1741,12 @@ int RunGui() {
     glfwSetDropCallback(window, DropCallback);
     ImGui_ImplOpenGL3_Init("#version 330");
 
-#ifdef OCRGUI_SELFTEST
+#ifdef PUREOCR_SELFTEST
     // 只用到几个 FBO 入口，用 wglGetProcAddress 现取，避免给主程序引入 GL loader
     if (g_shotW > 256 && g_shotH > 256) LoadShotFboFuncs();
 #endif
 
-#ifdef OCRGUI_SELFTEST
+#ifdef PUREOCR_SELFTEST
     // --shot 时用离屏 FBO 按指定分辨率渲染：远端桌面分辨率很小，直接开大窗口会被系统压回去
     if (g_shotW > 256 && g_shotH > 256) {
         glGenTextures(1, &g_shotTex);
@@ -1823,12 +1823,12 @@ int RunGui() {
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
         ImGui_ImplOpenGL3_NewFrame();
-#ifdef OCRGUI_SELFTEST
+#ifdef PUREOCR_SELFTEST
         if (g_selfTest) SelfTestStep(window);
 #endif
         static int devFrames = 0;
         if (++devFrames % 60 == 0)        ImGui_ImplGlfw_NewFrame();
-#ifdef OCRGUI_SELFTEST
+#ifdef PUREOCR_SELFTEST
         if (g_shotFbo) ImGui::GetIO().DisplaySize = ImVec2(static_cast<float>(g_shotW), static_cast<float>(g_shotH));
 #endif
         ImGui::NewFrame();
@@ -1856,7 +1856,7 @@ int RunGui() {
         ImGui::SameLine(0.0f, 0.0f);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18.0f * s, 16.0f * s));
         ImGui::BeginChild("##stage", ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding);
-#ifdef OCRGUI_HAS_MUPDF
+#ifdef PUREOCR_HAS_MUPDF
         DrawStage();
 #else
         ImGui::TextUnformatted("此版本未包含 MuPDF，无法预览 PDF。");
@@ -1865,14 +1865,14 @@ int RunGui() {
         ImGui::PopStyleVar();
         ImGui::End();
 
-#ifdef OCRGUI_HAS_MUPDF
+#ifdef PUREOCR_HAS_MUPDF
         DrawDownloadModal();
 #endif
 
         ImGui::Render();
         int w, h;
         glfwGetFramebufferSize(window, &w, &h);
-#ifdef OCRGUI_SELFTEST
+#ifdef PUREOCR_SELFTEST
         if (g_shotFbo) {
             w = g_shotW;
             h = g_shotH;
@@ -1887,7 +1887,7 @@ int RunGui() {
         }
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-#ifdef OCRGUI_SELFTEST
+#ifdef PUREOCR_SELFTEST
         MaybeCaptureShot(w, h);
         if (g_shotFbo) p_glBindFramebuffer(GL_FRAMEBUFFER, 0);
 #endif
@@ -1917,14 +1917,14 @@ int RunGui() {
     glfwDestroyWindow(window);
     SaveSettings();
     glfwTerminate();
-#ifdef OCRGUI_SELFTEST
+#ifdef PUREOCR_SELFTEST
     if (g_selfTest && !g_selfTestOk) return 3;
 #endif
     return 0;
 }
 
 int RunApp(int argc, char** argv) {
-#ifdef OCRGUI_SELFTEST
+#ifdef PUREOCR_SELFTEST
     if (argc > 2 && std::string(argv[1]) == "--shot") {
         g_shotPath = argv[2];
         g_shotFrame = 200;

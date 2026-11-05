@@ -187,10 +187,10 @@ bool HttpDownload(const std::string& url, const std::string& outPath,
     }
 
     WinHttpHandles h;
-    h.session = WinHttpOpen(L"ocr-gui/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
+    h.session = WinHttpOpen(L"PureOCR/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
                             WINHTTP_NO_PROXY_BYPASS, 0);
     if (!h.session)
-        h.session = WinHttpOpen(L"ocr-gui/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+        h.session = WinHttpOpen(L"PureOCR/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                                 WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!h.session) return fail("无法初始化网络会话");
     WinHttpSetTimeouts(h.session, 15000, 15000, 30000, 60000);
@@ -204,7 +204,7 @@ bool HttpDownload(const std::string& url, const std::string& outPath,
 
     DWORD policy = WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS;
     WinHttpSetOption(h.request, WINHTTP_OPTION_REDIRECT_POLICY, &policy, sizeof(policy));
-    WinHttpAddRequestHeaders(h.request, L"User-Agent: ocr-gui\r\n", -1L,
+    WinHttpAddRequestHeaders(h.request, L"User-Agent: PureOCR\r\n", -1L,
                              WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE);
     if (resumeFrom > 0) {
         wchar_t range[80];

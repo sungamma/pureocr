@@ -1,10 +1,10 @@
 ﻿<#
 .SYNOPSIS
-  把 ocrgui 打包成可直接双击运行的目录（并压缩为 zip）。
+  把 pureocr 打包成可直接双击运行的目录（并压缩为 zip）。
 
 .DESCRIPTION
   产物目录结构：
-    ocrgui.exe           主程序（GUI + CLI）
+    pureocr.exe           主程序（GUI + CLI）
     onnxruntime.dll
     models\*.onnx        PP-OCR 模型
     使用说明.txt
@@ -17,7 +17,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$BuildDir = (Join-Path $env:USERPROFILE 'build\ocrgui\Release'),
+    [string]$BuildDir = (Join-Path $env:USERPROFILE 'build\pureocr\Release'),
     [string]$OutDir   = (Join-Path $PSScriptRoot '..\dist'),
     [string]$Version,
     [ValidateSet('none', 'basic', 'full')]
@@ -29,14 +29,14 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot  = Resolve-Path (Join-Path $PSScriptRoot '..')
 $modelsDir = (Resolve-Path (Join-Path $PSScriptRoot '..\models')).Path
-$exe       = Join-Path $BuildDir 'ocrgui.exe'
+$exe       = Join-Path $BuildDir 'pureocr.exe'
 $ortDll    = Join-Path $BuildDir 'onnxruntime.dll'
 
 if (-not (Test-Path -LiteralPath $exe)) {
     throw "找不到 $exe，请先构建：cmake --build <build> --config Release"
 }
 if (-not (Test-Path -LiteralPath $modelsDir)) {
-    throw "找不到模型目录 $modelsDir，请先运行：ocrgui.exe --fetch-models"
+    throw "找不到模型目录 $modelsDir，请先运行：pureocr.exe --fetch-models"
 }
 
 if (-not $Version) {
@@ -45,7 +45,7 @@ if (-not $Version) {
 }
 if (-not $Version) { $Version = Get-Date -Format 'yyyyMMdd' }
 $stamp   = $Version
-$pkgName = "ocrgui-$stamp-win-x64"
+$pkgName = "pureocr-$stamp-win-x64"
 $pkgDir  = Join-Path $OutDir $pkgName
 if (Test-Path -LiteralPath $pkgDir) {
     try {
@@ -89,10 +89,10 @@ foreach ($name in $modelNames) {
 $onnxCn = @(Get-ChildItem -LiteralPath $modelsOut -Filter '*.onnx' -File -ErrorAction SilentlyContinue).Count
 Write-Host "模型打包：$Models（$onnxCn 个 onnx）"
 
-$readme = 'PDF OCR 工具（C++ 版）
+$readme = 'PureOCR 工具（C++ 版）
 =====================
 
-双击 ocrgui.exe 打开界面（左边是参数，右边常驻页面预览）：
+双击 pureocr.exe 打开界面（左边是参数，右边常驻页面预览）：
   1) 点「选择 PDF 文件…」；输出默认落在同目录「原名_OCR.pdf」，可用「另存为…」改
      要整批处理：点「选择文件夹…」（或把文件夹拖进窗口），可勾「含子目录」「覆盖已有结果」
   2) 「页范围」留空 = 全部；也可以写 1-10,15（框下面会显示共几页、这次处理几页）
@@ -127,7 +127,7 @@ $readme = 'PDF OCR 工具（C++ 版）
 - 模型都在 models\ 下；移动版与服务器版共用 ppocrv5_dict.txt
 - 断点续跑：同目录生成 *_ocrcache.tsv；整篇跑完自动删除（中途挂掉才会留着），
   改 DPI / 模型 / 合并阈值会自动失效重建
-- 只支持 Windows 10/11 x64，不需要显卡（ONNX Runtime CPU）
+- 支持 Windows 10/11 x64 与 Linux x64，不需要显卡（ONNX Runtime CPU）
 - 许可：AGPL-3.0（见 LICENSE / THIRD_PARTY_NOTICES.md），随包附带完整许可文本'
 Set-Content -LiteralPath (Join-Path $pkgDir '使用说明.txt') -Value $readme -Encoding UTF8
 
@@ -150,7 +150,7 @@ $runCli = 'param(
     [switch]$Resume,
     [switch]$NoMask
 )
-$exe = Join-Path $PSScriptRoot "ocrgui.exe"
+$exe = Join-Path $PSScriptRoot "pureocr.exe"
 $modelDir = Join-Path $PSScriptRoot "models"
 if (-not $Pdf -and -not $Dir) { throw "请用 -Pdf <文件> 或 -Dir <目录> 指定输入" }
 $batch = [bool]$Dir
@@ -177,7 +177,7 @@ Set-Content -LiteralPath (Join-Path $pkgDir 'run-cli.ps1') -Value $runCli -Encod
 $commit = ''
 try { $commit = (& git -C $repoRoot rev-parse --short HEAD 2>$null) } catch { }
 $buildLines = @(
-    "ocrgui 构建信息",
+    "pureocr 构建信息",
     "================",
     "构建时间 : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')",
         "VERSION  : $Version",

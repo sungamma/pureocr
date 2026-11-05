@@ -14,7 +14,7 @@
 #include <cstddef>
 
 // 长度符号按 size_t 尺寸定义（8 字节）：即使库那边按 unsigned int 读，低 4 字节同样是 0。
-#define OCRGUI_EMPTY_FONT_BLOB(name)             \
+#define PUREOCR_EMPTY_FONT_BLOB(name)             \
     extern "C" {                                 \
     extern const unsigned char _binary_##name[]; \
     const unsigned char _binary_##name[] = {0};  \
@@ -22,10 +22,10 @@
     const std::size_t _binary_##name##_size = 0; \
     }
 
-OCRGUI_EMPTY_FONT_BLOB(SourceHanSerif_Regular_ttc)
-OCRGUI_EMPTY_FONT_BLOB(DroidSansFallbackFull_ttf)
-OCRGUI_EMPTY_FONT_BLOB(DroidSansFallback_ttf)
+PUREOCR_EMPTY_FONT_BLOB(SourceHanSerif_Regular_ttc)
+PUREOCR_EMPTY_FONT_BLOB(DroidSansFallbackFull_ttf)
+PUREOCR_EMPTY_FONT_BLOB(DroidSansFallback_ttf)
 
-#undef OCRGUI_EMPTY_FONT_BLOB
+#undef PUREOCR_EMPTY_FONT_BLOB
 
 #endif  // OCR_MUPDF_SLIM

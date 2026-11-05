@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    下载并准备 ocr-gui 的第三方依赖（构建前跑一次，产物都不入库）。
+    下载并准备 PureOCR 的第三方依赖（构建前跑一次，产物都不入库）。
 
 .DESCRIPTION
     第三方库体积太大且不适合进 Git，仓库里只放本脚本，依赖按需下载：
@@ -27,7 +27,7 @@
     不生成 libmupdf-slim.lib（用完整库，exe 会大 32 MB）
 
 .PARAMETER DownloadDir
-    下载缓存目录，默认 %TEMP%\ocrgui-deps（已下完的包会复用）
+    下载缓存目录，默认 %TEMP%\pureocr-deps（已下完的包会复用）
 
 .EXAMPLE
     pwsh -NoProfile -File tools\fetch_deps.ps1
@@ -41,7 +41,7 @@ param(
     [switch]$Force,
     [switch]$SkipMupdf,
     [switch]$SkipSlim,
-    [string]$DownloadDir = (Join-Path $env:TEMP 'ocrgui-deps')
+    [string]$DownloadDir = (Join-Path $env:TEMP 'pureocr-deps')
 )
 
 $ErrorActionPreference = 'Stop'

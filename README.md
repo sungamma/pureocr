@@ -1,4 +1,4 @@
-# PDF OCR（`ocrgui`）
+# PureOCR
 
 把扫描版 PDF 变成**可搜索、可复制**的 PDF：逐页渲染 → PP-OCRv5/v4/v3 识别 → 只向页面追加
 一层**隐形文字层**，原始页面（图像、字体、编码）一律不动。
@@ -17,7 +17,7 @@
 pwsh -NoProfile -File tools\fetch_deps.ps1
 
 # 2) 模型（不入库，约 40 MB）：首次运行时在线下载，也可以提前拉
-#    dist\ocrgui-*\ocrgui.exe --fetch-models --preset v5
+#    dist\pureocr-*\pureocr.exe --fetch-models --preset v5
 
 # 3) 一键发布（编译 + 打包 + 生成 SHA256）；版本默认读 VERSION，可用 -Version 覆盖
 pwsh -NoProfile -File tools\release.ps1 -Clean -Models basic
@@ -34,7 +34,7 @@ sudo apt-get install -y build-essential cmake ninja-build pkg-config \
      libcurl4-openssl-dev libssl-dev libgl1-mesa-dev xorg-dev \
      libfontconfig1-dev fonts-noto-cjk
 
-# 3) 构建 + 打包 tar.gz（含 ocrgui 与 libonnxruntime.so）
+# 3) 构建 + 打包 tar.gz（含 pureocr 与 libonnxruntime.so）
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 bash tools/package_linux.sh --build-dir build --models basic
@@ -48,14 +48,14 @@ macOS 目前只是编译探测（不阻塞），见 `docs/CROSS_PLATFORM.md`。
 
 ## 用法
 
-界面：双击 `ocrgui.exe`，选 PDF 或文件夹（可直接拖入），设好参数后「开始识别」。
+界面：双击 `pureocr.exe`，选 PDF 或文件夹（可直接拖入），设好参数后「开始识别」。
 
 命令行：
 
 ```powershell
-ocrgui.exe --pdf <in.pdf> [--out-pdf <out.pdf>]     # 单文件
-ocrgui.exe -f <目录> [-r] [--out-dir <输出目录>]     # 整目录批量（-r 含子目录）
-ocrgui.exe --fetch-models --preset v5               # 下载模型
+pureocr.exe --pdf <in.pdf> [--out-pdf <out.pdf>]     # 单文件
+pureocr.exe -f <目录> [-r] [--out-dir <输出目录>]     # 整目录批量（-r 含子目录）
+pureocr.exe --fetch-models --preset v5               # 下载模型
 ```
 
 默认参数：2 线程 / 300 dpi / 最低置信度 0.55 / 同行碎片合并 0.8。

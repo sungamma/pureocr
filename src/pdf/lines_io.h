@@ -16,7 +16,7 @@ bool WriteLinesCsv(const std::string& path, const std::vector<OcrPageLines>& pag
                    float reviewScore, std::string* err);
 
 /// 页级识别结果缓存（断点续跑用），行文本格式：
-///   # ocrgui-cache v1 dpi=300
+///   # pureocr-cache v1 dpi=300
 ///   p <页号> <宽> <高>
 ///   l <x0> <y0> <x1> <y1> <score> <文字>
 /// 追加写，崩溃后最多丢半行；载入时按 dpi 校验，不符则整体忽略。

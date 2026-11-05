@@ -7,8 +7,8 @@ macOS 尚未完成，CI 里只有“编译探测”，失败不阻塞流水线�
 
 | 平台 | 状态 | 说明 |
 |---|---|---|
-| Windows x64 (MSVC) | 完整 | `tools/fetch_deps.ps1` + `tools/release.ps1`，产物 `ocrgui-<ver>-win-x64.zip` |
-| Linux x64 (GCC) | 完整 | `tools/fetch_deps_linux.sh` + `tools/package_linux.sh`，产物 `ocrgui-<ver>-linux-x64.tar.gz` |
+| Windows x64 (MSVC) | 完整 | `tools/fetch_deps.ps1` + `tools/release.ps1`，产物 `pureocr-<ver>-win-x64.zip` |
+| Linux x64 (GCC) | 完整 | `tools/fetch_deps_linux.sh` + `tools/package_linux.sh`，产物 `pureocr-<ver>-linux-x64.tar.gz` |
 | macOS | 探测 | 只跑 configure/build，`continue-on-error: true` |
 
 发布：推送 `v*` tag（且与 `VERSION` 一致）后，`release` 任务把 Windows 与 Linux 产物一起上传到同一个 GitHub Release。

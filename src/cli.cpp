@@ -27,7 +27,7 @@
 
 #include "util/model_download.h"
 
-#ifdef OCRGUI_HAS_MUPDF
+#ifdef PUREOCR_HAS_MUPDF
 #include "pdf/doc.h"
 #include "pdf/ocr_pages.h"
 #endif
@@ -83,7 +83,7 @@ int RunPdfCli(const std::string &pdfPath, const std::string &outPdf, const std::
               bool resume, const std::string &cachePath, const std::string &detModel,
               const std::string &recModel, const std::string &clsModel, float mergeGap,
               const std::string &fixCsv, bool keepCache) {
-#ifdef OCRGUI_HAS_MUPDF
+#ifdef PUREOCR_HAS_MUPDF
     namespace fs = std::filesystem;
     if (fontPath.empty()) {
         std::fprintf(stderr, "找不到中文字体，请用 --font 指定 TTF/TTC\n");
@@ -286,7 +286,7 @@ int RunPdfBatchCli(const std::string &folderIn, const std::string &outDirIn,
                    const std::string &cachePath, const std::string &detModel,
                    const std::string &recModel, const std::string &clsModel, float mergeGap,
                    const std::string &fixCsv, bool recurse, bool overwrite, bool keepCache) {
-#ifdef OCRGUI_HAS_MUPDF
+#ifdef PUREOCR_HAS_MUPDF
     namespace fs = std::filesystem;
     std::error_code ec;
     const fs::path folder = fs::u8path(folderIn);
@@ -490,15 +490,15 @@ int RunCli(int argc, char **argv) {
         } else if (a == "--source" && i + 1 < argc) {
             source = argv[++i];
         } else if (a == "--version" || a == "-V") {
-            std::printf("ocrgui %s\n", OCRGUI_VERSION_STRING);
+            std::printf("pureocr %s\n", PUREOCR_VERSION_STRING);
             return 0;
         } else if (a == "--help" || a == "-h") {
-            std::printf("ocrgui %s\n\n", OCRGUI_VERSION_STRING);
+            std::printf("pureocr %s\n\n", PUREOCR_VERSION_STRING);
             std::printf("用法:\n");
-            std::printf("  ocrgui --pdf <输入.pdf> [--out-pdf <输出.pdf>] [--dpi 300] [--threads 2]\n");
+            std::printf("  pureocr --pdf <输入.pdf> [--out-pdf <输出.pdf>] [--dpi 300] [--threads 2]\n");
             std::printf("         [--pages 1-10,15] [--font <ttf>] [--mask] [--min-score 0.55]\n");
             std::printf("         [--resume] 断点续跑（整篇跑完自动删缓存，--keep-cache 保留）\n");
-            std::printf("  ocrgui --pdf <目录>   （也可 --dir / -f 指定目录）\n");
+            std::printf("  pureocr --pdf <目录>   （也可 --dir / -f 指定目录）\n");
             std::printf("         [--out-dir <输出目录>] [--recurse|-r 含子目录] [--overwrite 重做已有结果]\n");
             std::printf("         批量：目录下所有 PDF 转成 <原名>_OCR.pdf；已有的自动跳过\n");
             std::printf("         （文件名以 _OCR 结尾的、或已经存在 <原名>_OCR.pdf 的原文件）\n");
@@ -508,10 +508,10 @@ int RunCli(int argc, char **argv) {
             std::printf("         [--preset auto|v3|v4|v4s|v5|v5s] [--det-model <文件名|绝对路径>]\n");
             std::printf("         [--rec-model <文件名|绝对路径>] [--cls-model <文件名>]\n");
             std::printf("         [--merge-gap 0.8]  同行碎片合并阈值（×行高，0=关闭）\n");
-            std::printf("  ocrgui --fetch-models [--preset v5] [--model-dir <模型目录>]\n");
+            std::printf("  pureocr --fetch-models [--preset v5] [--model-dir <模型目录>]\n");
             std::printf("         [--source auto|official|mirror]  缺模型时联网下载\n");
 
-            std::printf("  ocrgui --image <图片> [--out <json>] [--dump-crops <目录>] [--threads N]\n");
+            std::printf("  pureocr --image <图片> [--out <json>] [--dump-crops <目录>] [--threads N]\n");
             return 0;
         } else {
             std::fprintf(stderr, "未知参数: %s\n", a.c_str());

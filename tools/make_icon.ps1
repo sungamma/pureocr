@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    生成 ocr-gui 的窗口/可执行文件图标（resources\ocrgui.ico）。
+    生成 PureOCR 的窗口/可执行文件图标（resources\pureocr.ico）。
 
 .DESCRIPTION
     画一个圆角方形底（蓝色渐变）+ 白色 "OCR" 字样，输出多尺寸 ICO：
@@ -11,7 +11,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$OutFile = (Join-Path $PSScriptRoot '..\resources\ocrgui.ico')
+    [string]$OutFile = (Join-Path $PSScriptRoot '..\resources\pureocr.ico')
 )
 
 $ErrorActionPreference = 'Stop'

@@ -1,7 +1,9 @@
 # 开发历程（历史记录）
 
-> 本文是项目早期（仓库还叫 `c++_learn`、代码在 `ocr-gui/` 子目录时）的开发日志，
+> 本文是项目早期（仓库还叫 `c++_learn`、代码在 `PureOCR/` 子目录时）的开发日志，
 > 路径已按现在「仓库根目录即项目根目录」的结构更新，内容保持原样，仅供追溯。
+>
+> 2026-11-05：项目正式定名 **PureOCR**，可执行文件由 `ocrgui` 更名为 `pureocr`；下文历史记录中的旧名已同步替换。
 
 ## 环境
 
@@ -18,7 +20,7 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-## PDF OCR 工具一期（原型）
+## PureOCR 工具一期（原型）
 
 进度：M0 完成（窗口骨架 + 中文界面 + 打开 PDF 对话框）
 
@@ -28,11 +30,11 @@ cmake --build build
 
 ```powershell
 $cmake = 'C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
-& $cmake -S . -B C:\Users\xwtal\build\ocrgui -G "Visual Studio 17 2022" -A x64
-& $cmake --build C:\Users\xwtal\build\ocrgui --config Release
+& $cmake -S . -B C:\Users\xwtal\build\pureocr -G "Visual Studio 17 2022" -A x64
+& $cmake --build C:\Users\xwtal\build\pureocr --config Release
 ```
 
-产物：`C:\Users\xwtal\build\ocrgui\Release\ocrgui.exe`
+产物：`C:\Users\xwtal\build\pureocr\Release\pureocr.exe`
 
 待接入：ONNX Runtime + RapidOCR 模型、MuPDF 渲染与文字层写回（M1/M2）。
 
@@ -45,10 +47,10 @@ onnxruntime + PP-OCRv3 已接入，C++ 侧可独立完成「图像 -> 检测 -> 
 python tools/fetch_models.py
 
 # 构建
-& $cmake --build C:\Users\xwtal\build\ocrgui --config Release
+& $cmake --build C:\Users\xwtal\build\pureocr --config Release
 
 # CLI 识别单张图片，输出 JSON
-C:\Users\xwtal\build\ocrgui\Release\ocrgui.exe --image page.png `
+C:\Users\xwtal\build\pureocr\Release\pureocr.exe --image page.png `
     --model-dir models --out result.json
 
 # 与 Python 版逐页对比（M1 验收工具）
@@ -100,7 +102,7 @@ $msbuild = "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Curr
 3. 拷贝：`<源码目录>/include` -> `third_party/mupdf-1.25.0/include`，
    `<源码目录>/platform/win32/x64/Release/libmupdf.lib` -> `third_party/mupdf-1.25.0/lib/`。
 
-CMake 检测到 `third_party/mupdf-1.25.0/lib/libmupdf.lib` 才会打开 `OCRGUI_HAS_MUPDF`；
+CMake 检测到 `third_party/mupdf-1.25.0/lib/libmupdf.lib` 才会打开 `PUREOCR_HAS_MUPDF`；
 没有该库也能编译，只是 PDF 功能不可用。
 
 > MuPDF 是 AGPL 授权（个人/开源使用没问题，商业分发需 Artifex 商业许可）。
@@ -108,7 +110,7 @@ CMake 检测到 `third_party/mupdf-1.25.0/lib/libmupdf.lib` 才会打开 `OCRGUI
 ### 2. CLI 用法
 
 ```powershell
-$exe = 'C:\Users\xwtal\build\ocrgui\Release\ocrgui.exe'
+$exe = 'C:\Users\xwtal\build\pureocr\Release\pureocr.exe'
 
 # 全文档
 & $exe --pdf "输入.pdf" --out-pdf "输出.pdf" --threads 4 --model-dir models --log run.log
@@ -197,7 +199,7 @@ C++ 反而识别出 `GB/T 151—2026`、`浮头式`、坐标轴数字等真实�
 ```powershell
 pwsh -NoProfile -File tools/release.ps1                  # 配置 + 编译 Release + 打包 + SHA256
 pwsh -NoProfile -File tools/release.ps1 -Clean           # 先清空构建目录再编
-pwsh -NoProfile -File tools/release.ps1 -Version 1.0.0   # 产物 ocrgui-1.0.0.zip
+pwsh -NoProfile -File tools/release.ps1 -Version 1.0.0   # 产物 pureocr-1.0.0.zip
 pwsh -NoProfile -File tools/release.ps1 -SkipBuild       # 只重新打包已有构建
 ```
 
@@ -205,17 +207,17 @@ pwsh -NoProfile -File tools/release.ps1 -SkipBuild       # 只重新打包已有
 脚本会自动找 CMake（PATH 里没有就用 VS 自带的）、检查 third_party 与 models，打包后写 `SHA256SUMS.txt`。
 
 > 若配置阶段报 `error C1090: PDB API 调用失败`，是 Dropbox / OneDrive 这类云同步的文件过滤驱动
-> 挡住了编译器的 PDB 写入（把整个仓库挪出同步目录最省事）。脚本会自动改到 `%TEMP%\ocrgui-build`
+> 挡住了编译器的 PDB 写入（把整个仓库挪出同步目录最省事）。脚本会自动改到 `%TEMP%\pureocr-build`
 > 重新配置，编译完照常删除临时目录，不用手工干预。
 
 只打包（已自行编译过时）：
 
 ```powershell
-pwsh -NoProfile -File tools/package.ps1          # 生成 dist/ocrgui-YYYYMMDD 目录 + zip
+pwsh -NoProfile -File tools/package.ps1          # 生成 dist/pureocr-YYYYMMDD 目录 + zip
 pwsh -NoProfile -File tools/package.ps1 -NoZip   # 只出目录
 ```
 
-产物目录：`ocrgui.exe`、`onnxruntime.dll`、`models\*.onnx`、`使用说明.txt`、`run-cli.ps1`。
+产物目录：`pureocr.exe`、`onnxruntime.dll`、`models\*.onnx`、`使用说明.txt`、`run-cli.ps1`。
 双击 exe 进 GUI；`run-cli.ps1 -Pdf <文件> [-Pages 1-10] [-Threads 4] [-NoMask]` 走命令行。
 
 ### 4. 踩坑：中文路径让 GUI 闪退（已修）
