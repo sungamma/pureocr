@@ -100,12 +100,12 @@ function Get-VSInstallPath {
 $vsInstall = Get-VSInstallPath
 
 function Resolve-CMakeExe {
-    $cmd = Get-Command cmake -CommandType Application -ErrorAction SilentlyContinue
-    if ($cmd) { return $cmd.Source }
     $candidates = @(
         (Join-Path $env:ProgramFiles 'CMake\bin\cmake.exe'),
         (Join-Path $env:LOCALAPPDATA 'Programs\CMake\bin\cmake.exe')
     )
+    $found = @(Get-Command cmake -CommandType Application -ErrorAction SilentlyContinue)
+    foreach ($f in $found) { $candidates += $f.Source }
     if ($vsInstall) {
         $candidates += (Join-Path $vsInstall 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe')
     }
@@ -121,10 +121,30 @@ if (-not $Generator) {
     if ($vsInstall) {
         $vswhere  = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
         $lineVer  = (& $vswhere -latest -products * -property catalog_productLineVersion 2>$null | Select-Object -First 1)
-        switch ("$lineVer".Trim()) {
-            '2022'  { $Generator = 'Visual Studio 17 2022' }
-            '2019'  { $Generator = 'Visual Studio 16 2019' }
-            default { $Generator = 'Visual Studio 17 2022' }
+        $mapped = switch ("$lineVer".Trim()) {
+            '18'    { 'Visual Studio 18 2026' }
+            '17'    { 'Visual Studio 17 2022' }
+            '16'    { 'Visual Studio 16 2019' }
+            default { $null }
+        }
+        # 以本机 CMake 实际支持的生成器为准：装的是 VS 18 时用它，
+        # 否则退到 CMake 列出的最高版本 VS 生成器
+        $knownGenerators = @()
+        try {
+            $helpText = (& $cmakeExe --help 2>&1 | Out-String)
+            $knownGenerators = [regex]::Matches($helpText, 'Visual Studio \d+ \d{4}') |
+                               ForEach-Object { $_.Value } | Select-Object -Unique
+        } catch { $knownGenerators = @() }
+        if ($mapped -and $knownGenerators -contains $mapped) {
+            $Generator = $mapped
+        } elseif ($knownGenerators.Count -gt 0) {
+            $Generator = $knownGenerators |
+                         Sort-Object { [int]($_ -replace '^Visual Studio (\d+).*$', '$1') } |
+                         Select-Object -Last 1
+        } elseif ($mapped) {
+            $Generator = $mapped
+        } else {
+            $Generator = 'Visual Studio 17 2022'
         }
     } elseif (Get-Command ninja -CommandType Application -ErrorAction SilentlyContinue) {
         $Generator = 'Ninja'
