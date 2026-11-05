@@ -490,7 +490,7 @@ std::string PickPathDialog(const char* mode, const char* filterName, const char*
     return util::WideToUtf8(file);
 #else
     std::string cmd;
-    const std::string quoted = "\"" + pattern + "\"";
+    const std::string quoted = std::string("\"") + pattern + "\"";
     if (std::string(mode) == "save") {
         cmd = "zenity --file-selection --save --confirm-overwrite --file-filter=" + quoted;
         if (!initial.empty()) cmd += " --filename=\"" + initial + "\"";
@@ -1768,7 +1768,8 @@ int RunGui() {
                                ? "C:\\Windows\\Fonts\\msyh.ttc"
                                : "C:\\Windows\\Fonts\\simhei.ttf";
 #else
-    const char* fontPath = io.Fonts->Fonts.empty() ? nullptr : nullptr;
+    // 找一个能显示中文的字体；都没有就退回 ImGui 内置字体（会缺字，但不会崩）
+    const char* fontPath = nullptr;
     static const char* kLinuxFonts[] = {
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
@@ -1803,11 +1804,20 @@ int RunGui() {
     cfg.OversampleH = 3;
     cfg.OversampleV = 1;
     cfg.RasterizerMultiply = 1.05f;
-    ImFont* uiFont = io.Fonts->AddFontFromFileTTF(fontPath, 16.0f * g_uiScale, &cfg, ranges);
-    if (!uiFont) uiFont = io.Fonts->AddFontDefault();
+    ImFont* uiFont = nullptr;
+    if (fontPath) {
+        uiFont = io.Fonts->AddFontFromFileTTF(fontPath, 16.0f * g_uiScale, &cfg, ranges);
+        if (uiFont) {
+            g_fontTitle = io.Fonts->AddFontFromFileTTF(fontPath, 21.0f * g_uiScale, &cfg, ranges);
+            g_fontBrand = io.Fonts->AddFontFromFileTTF(fontPath, 17.0f * g_uiScale, &cfg, ranges);
+        }
+    }
+    if (!uiFont) {
+        uiFont = io.Fonts->AddFontDefault();
+        g_fontTitle = nullptr;
+        g_fontBrand = nullptr;
+    }
     io.FontDefault = uiFont;
-    g_fontTitle = io.Fonts->AddFontFromFileTTF(fontPath, 21.0f * g_uiScale, &cfg, ranges);
-    g_fontBrand = io.Fonts->AddFontFromFileTTF(fontPath, 17.0f * g_uiScale, &cfg, ranges);
 
 
     while (!glfwWindowShouldClose(window)) {
