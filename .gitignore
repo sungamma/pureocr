@@ -53,3 +53,8 @@ ocrwork/
 
 # 批量 OCR 输入目录（用户自己的 PDF，不入库）
 tobeocr/
+
+# Global: keep only the small shared test sample
+*.onnx
+*.pdf
+!for-testing/sample.pdf
