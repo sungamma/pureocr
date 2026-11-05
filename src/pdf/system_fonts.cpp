@@ -70,11 +70,22 @@ bool HasPrefixNoCase(const char* s, const char* prefix) {
     return _strnicmp(s, prefix, n) == 0;
 }
 #else
+/// Linux: look for a font file in the common system font directories.
 std::string FontPath(const char* file) {
+    if (!file || !*file) return std::string();
+    if (std::strchr(file, '/')) {
+        if (FILE* f = std::fopen(file, "rb")) {
+            std::fclose(f);
+            return std::string(file);
+        }
+        return std::string();
+    }
     static const char* kDirs[] = {"/usr/share/fonts/opentype/noto/",
                                   "/usr/share/fonts/truetype/noto/",
                                   "/usr/share/fonts/truetype/wqy/",
-                                  "/usr/share/fonts/truetype/dejavu/"};
+                                  "/usr/share/fonts/truetype/dejavu/",
+                                  "/usr/share/fonts/truetype/liberation/",
+                                  "/usr/share/fonts/liberation/"};
     for (const char* dir : kDirs) {
         const std::string p = std::string(dir) + file;
         if (FILE* f = std::fopen(p.c_str(), "rb")) {
@@ -83,6 +94,28 @@ std::string FontPath(const char* file) {
         }
     }
     return std::string();
+}
+
+fz_font* TryLoadFromSystem(fz_context* ctx, const char* file, int index, const char* name) {
+    if (!file || !*file) return nullptr;
+    const std::string path = FontPath(file);
+    if (path.empty()) return nullptr;
+
+    fz_font* font = nullptr;
+    fz_try(ctx) {
+        font = fz_new_font_from_file(ctx, name, path.c_str(), index, 0);
+    }
+    fz_catch(ctx) {
+        font = nullptr;
+    }
+    return font;
+}
+
+fz_font* TryList(fz_context* ctx, const char* const* files, int count, const char* name) {
+    for (int i = 0; i < count; ++i) {
+        if (fz_font* font = TryLoadFromSystem(ctx, files[i], 0, name)) return font;
+    }
+    return nullptr;
 }
 
 bool EqualsNoCase(const char* a, const char* b) {
